@@ -22,7 +22,7 @@ func Resolve(backend, service string) (Store, error) {
 		if bwAvailable() {
 			return bwStore{}, nil
 		}
-		return nil, errors.New("Bitwarden CLI (bw) is not configured/unlocked; run `bw login` and set BW_SESSION")
+		return nil, errors.New("bitwarden CLI (bw) is not configured/unlocked; run `bw login` and set BW_SESSION")
 	case "1password", "op":
 		if opAvailable() {
 			return opStore{}, nil

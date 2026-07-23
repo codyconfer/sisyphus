@@ -20,7 +20,7 @@ func TestBeginRollUpChildren(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
 
-	parent, err := s.Begin("flight", "morning", map[string]string{"role": "oncall"})
+	parent, err := s.Begin("job", "nightly", map[string]string{"env": "prod"})
 	if err != nil || parent == 0 {
 		t.Fatalf("Begin = %d, %v", parent, err)
 	}
@@ -40,13 +40,13 @@ func TestBeginRollUpChildren(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(top) != 1 || top[0].Kind != "flight" || top[0].Name != "morning" {
+	if len(top) != 1 || top[0].Kind != "job" || top[0].Name != "nightly" {
 		t.Fatalf("Recent = %+v", top)
 	}
 	if top[0].Count != 3 {
 		t.Errorf("rolled-up count = %d, want 3", top[0].Count)
 	}
-	if top[0].Attrs["role"] != "oncall" {
+	if top[0].Attrs["env"] != "prod" {
 		t.Errorf("attrs = %v", top[0].Attrs)
 	}
 	if top[0].Finished.IsZero() {

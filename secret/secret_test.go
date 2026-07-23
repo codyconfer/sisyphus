@@ -136,10 +136,10 @@ func TestGetOrCreateReadErrorDoesNotMint(t *testing.T) {
 
 func TestOpNotFoundClassifier(t *testing.T) {
 	cases := map[string]bool{
-		`"x" isn't an item`: true,
-		"item not found":    true,
-		"no item matching":  true,
-		"doesn't exist":     true,
+		`"x" isn't an item`:  true,
+		"item not found":     true,
+		"no item matching":   true,
+		"doesn't exist":      true,
 		"connection refused": false,
 		"vault is locked":    false,
 	}

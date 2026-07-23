@@ -10,11 +10,14 @@ the caller owns its config struct, namespaces, filenames, and identifiers and
 passes them in. It was extracted from [munin](https://github.com/codyconfer/munin)
 but depends on nothing munin-specific.
 
-```
+```sh
+# private module: configure Go to fetch it directly (not via the public proxy)
+go env -w 'GOPRIVATE=github.com/codyconfer/*'
 go get github.com/codyconfer/sisyphus
 ```
 
-DuckDB-backed packages require CGO (via `github.com/marcboeker/go-duckdb/v2`).
+Building also needs git credentials with read access to the repo. DuckDB-backed
+packages require CGO (via `github.com/marcboeker/go-duckdb/v2`).
 
 ## Packages
 
@@ -113,3 +116,7 @@ go test ./...
 Tests run offline. The secret backends shell out to `bw`/`op` only when present;
 their availability probes are stubbable, and the keyring path is tested with
 go-keyring's mock.
+
+## License
+
+Released under the [MIT License](LICENSE).
