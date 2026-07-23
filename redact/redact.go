@@ -80,12 +80,22 @@ func Line(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+var secretTerms = []string{
+	"secret", "password", "passwd", "passphrase", "pwd",
+	"token", "apikey", "api_key", "accesskey", "access_key",
+	"private_key", "privatekey", "credential", "bearer",
+	"cookie", "session", "signature", "salt", "otp", "passcode",
+}
+
 func Key(k string) bool {
 	k = strings.ToLower(strings.TrimSpace(k))
-	for _, suf := range []string{"secret", "password", "token"} {
-		if strings.HasSuffix(k, suf) {
+	if strings.HasSuffix(k, "_env") || strings.HasSuffix(k, "_id") || k == "id" {
+		return false
+	}
+	for _, term := range secretTerms {
+		if strings.Contains(k, term) {
 			return true
 		}
 	}
-	return strings.Contains(k, "private_key") || strings.Contains(k, "apikey") || strings.Contains(k, "api_key")
+	return false
 }

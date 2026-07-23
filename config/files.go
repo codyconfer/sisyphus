@@ -46,6 +46,9 @@ func WriteCollection(dir string, blob []byte) (names []string, err error) {
 	}
 	sort.Strings(names)
 	for _, name := range names {
+		if name == "." || name == ".." || name != filepath.Base(name) {
+			return nil, fmt.Errorf("invalid collection entry name %q", name)
+		}
 		path := filepath.Join(dir, name)
 		if err := os.WriteFile(path, []byte(files[name]), 0o600); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", path, err)

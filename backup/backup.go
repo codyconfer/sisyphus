@@ -28,6 +28,7 @@ func Archive(paths []string) ([]byte, error) {
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	n := 0
+	seen := map[string]bool{}
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -36,8 +37,13 @@ func Archive(paths []string) ([]byte, error) {
 			}
 			return nil, fmt.Errorf("reading %s: %w", p, err)
 		}
+		name := filepath.Base(p)
+		if seen[name] {
+			return nil, fmt.Errorf("duplicate backup entry %q: paths with the same basename collide", name)
+		}
+		seen[name] = true
 		hdr := &tar.Header{
-			Name:    filepath.Base(p),
+			Name:    name,
 			Mode:    0o600,
 			Size:    int64(len(data)),
 			ModTime: time.Now(),
@@ -103,6 +109,9 @@ func Restore(sealed, key []byte, destDir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := os.MkdirAll(destDir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", destDir, err)
+	}
 	names := make([]string, 0, len(entries))
 	for name, data := range entries {
 		base := filepath.Base(name)
@@ -115,6 +124,8 @@ func Restore(sealed, key []byte, destDir string) ([]string, error) {
 	return names, nil
 }
 
+const maxEntryBytes = 256 << 20
+
 func Extract(archive []byte) (map[string][]byte, error) {
 	out := map[string][]byte{}
 	tr := tar.NewReader(bytes.NewReader(archive))
@@ -126,11 +137,18 @@ func Extract(archive []byte) (map[string][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		data, err := io.ReadAll(tr)
+		name := filepath.Base(filepath.Clean(hdr.Name))
+		if name == "." || name == ".." || name == "" || name == string(filepath.Separator) {
+			continue
+		}
+		data, err := io.ReadAll(io.LimitReader(tr, maxEntryBytes+1))
 		if err != nil {
 			return nil, err
 		}
-		out[hdr.Name] = data
+		if int64(len(data)) > maxEntryBytes {
+			return nil, fmt.Errorf("backup entry %q exceeds %d bytes", name, maxEntryBytes)
+		}
+		out[name] = data
 	}
 	return out, nil
 }

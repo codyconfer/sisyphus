@@ -10,15 +10,19 @@ import (
 )
 
 func Open(path, schema string) (*sql.DB, error) {
+	restore := secureUmask()
 	db, err := sql.Open("duckdb", path)
 	if err != nil {
+		restore()
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
 	if _, err := db.Exec(schema); err != nil {
+		restore()
 		db.Close()
 		return nil, err
 	}
+	restore()
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {
 		db.Close()
 		return nil, err

@@ -1,0 +1,44 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - unconvert
+    - bodyclose
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    generated: lax
+    rules:
+      # Closing/rolling back in defer or error paths is idiomatic; the error is
+      # not actionable, so don't flag unchecked Close/Rollback.
+      - linters:
+          - errcheck
+        text: 'Error return value of `[^`]+\.(Close|Rollback)` is not checked'
+      # Test files may ignore errors and use looser patterns.
+      - path: _test\.go
+        linters:
+          - errcheck
+      # `x := lookup(); if x == nil { t.Fatal() }; x.Foo()` is a standard test
+      # idiom; staticcheck doesn't treat t.Fatal as terminating here.
+      - path: _test\.go
+        text: "SA5011"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/codyconfer/sisyphus

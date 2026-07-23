@@ -1,41 +1,35 @@
-.PHONY: build fmt fmt-check vet staticcheck govulncheck lint test check ci
+.PHONY: build test fmt fmt-check vet lint govulncheck check ci
 
 # Build all packages.
 build:
 	go build ./...
 
-# Format all Go source in place.
+# Format all Go source in place (gofmt + goimports via golangci-lint).
 fmt:
-	gofmt -w .
+	go tool golangci-lint fmt
 
-# Verify all Go source is formatted; fail (listing offenders) if not.
+# Verify all Go source is formatted; fail (showing the diff) if not.
 fmt-check:
-	@out="$$(gofmt -l .)"; \
-	if [ -n "$$out" ]; then \
-	  echo "gofmt needed on:"; echo "$$out"; exit 1; \
-	fi
+	go tool golangci-lint fmt --diff
 
 # go vet: the standard toolchain analyzers.
 vet:
 	go vet ./...
 
-# staticcheck: open-source static analysis (honnef.co/go/tools).
-staticcheck:
-	go tool staticcheck ./...
+# golangci-lint: aggregate static analysis (govet, staticcheck, errcheck, ...).
+lint:
+	go tool golangci-lint run
 
 # govulncheck: report known vulnerabilities in dependencies and reachable code.
 govulncheck:
 	go tool govulncheck ./...
 
-# All static analysis: formatting + vet + staticcheck + govulncheck.
-lint: fmt-check vet staticcheck govulncheck
-
 # Run the test suite.
 test:
 	go test ./...
 
-# Full gate: build, lint, test.
-check: build lint test
+# Full gate: build, format check, lint, vulncheck, test.
+check: build fmt-check lint govulncheck test
 
 # CI entrypoint: identical to the full gate.
 ci: check
