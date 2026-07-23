@@ -90,6 +90,7 @@ func Dial[T any](ctx context.Context, name string, decode func([]byte) (T, error
 				return
 			}
 		}
+		_ = sc.Err()
 	}()
 	return out, nil
 }
