@@ -12,7 +12,7 @@ func decodeInt(b []byte) (int, error) { return strconv.Atoi(string(b)) }
 
 func TestSocketBroadcastToMultipleClients(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.sock")
-	ln, err := Listen(path)
+	ln, err := Listen("test", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,11 +22,11 @@ func TestSocketBroadcastToMultipleClients(t *testing.T) {
 	defer subj.Close()
 	go Broadcast(t.Context(), ln, subj, 8, encodeInt)
 
-	a, err := Dial(t.Context(), path, decodeInt)
+	a, err := Dial(t.Context(), "test", path, decodeInt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Dial(t.Context(), path, decodeInt)
+	b, err := Dial(t.Context(), "test", path, decodeInt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,13 +51,13 @@ func TestSocketBroadcastToMultipleClients(t *testing.T) {
 
 func TestListenClearsStaleSocket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.sock")
-	ln1, err := Listen(path)
+	ln1, err := Listen("test", path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ln1.Close()
 
-	ln2, err := Listen(path)
+	ln2, err := Listen("test", path)
 	if err != nil {
 		t.Fatalf("re-listen over stale socket failed: %v", err)
 	}
@@ -66,10 +66,10 @@ func TestListenClearsStaleSocket(t *testing.T) {
 
 func TestIsListening(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.sock")
-	if IsListening(path) {
+	if IsListening("test", path) {
 		t.Fatal("nothing should be listening yet")
 	}
-	ln, err := Listen(path)
+	ln, err := Listen("test", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestIsListening(t *testing.T) {
 			c.Close()
 		}
 	}()
-	if !IsListening(path) {
+	if !IsListening("test", path) {
 		t.Fatal("should detect the live listener")
 	}
 }

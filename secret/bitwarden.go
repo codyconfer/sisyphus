@@ -2,6 +2,7 @@ package secret
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -12,11 +13,12 @@ type bwStore struct{}
 
 func (bwStore) Name() string { return "bitwarden" }
 
-func bwConfigured() bool {
+func bwConfigured(ctx context.Context) bool {
 	if _, err := exec.LookPath("bw"); err != nil {
 		return false
 	}
-	out, err := exec.Command("bw", "status").Output()
+	cmd := exec.CommandContext(ctx, "bw", "status")
+	out, err := cmd.Output()
 	if err != nil {
 		return false
 	}
@@ -29,8 +31,8 @@ func bwConfigured() bool {
 	return st.Status == "unlocked"
 }
 
-func (bwStore) Get(key string) (string, bool, error) {
-	cmd := exec.Command("bw", "get", "notes", key)
+func (bwStore) Get(ctx context.Context, key string) (string, bool, error) {
+	cmd := exec.CommandContext(ctx, "bw", "get", "notes", key)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -42,7 +44,7 @@ func (bwStore) Get(key string) (string, bool, error) {
 	return strings.TrimSpace(out.String()), true, nil
 }
 
-func (bwStore) Set(key, value string) error {
+func (bwStore) Set(ctx context.Context, key, value string) error {
 	item := map[string]any{
 		"type":  2,
 		"name":  key,
@@ -55,16 +57,16 @@ func (bwStore) Set(key, value string) error {
 	if err != nil {
 		return err
 	}
-	encoded, err := pipe("bw", []string{"encode"}, raw)
+	encoded, err := pipe(ctx, "bw", []string{"encode"}, raw)
 	if err != nil {
 		return err
 	}
-	_, err = pipe("bw", []string{"create", "item"}, encoded)
+	_, err = pipe(ctx, "bw", []string{"create", "item"}, encoded)
 	return err
 }
 
-func pipe(name string, args []string, stdin []byte) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+func pipe(ctx context.Context, name string, args []string, stdin []byte) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	var out bytes.Buffer
 	cmd.Stdout = &out

@@ -1,9 +1,11 @@
 package journal
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -32,7 +34,8 @@ CREATE TABLE IF NOT EXISTS records (
 );
 `
 
-var errUnavailable = errors.New("journal store unavailable")
+// ErrUnavailable is returned when a method is called on a nil or closed store.
+var ErrUnavailable = errors.New("journal store unavailable")
 
 type Run struct {
 	ID       int64
@@ -51,13 +54,19 @@ type Record struct {
 	Attrs map[string]string
 }
 
+// Result is a tabular ad-hoc query response.
+type Result struct {
+	Columns []string
+	Rows    [][]string
+}
+
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
 }
 
-func Open(path string) (*Store, error) {
-	db, err := duckdb.Open(path, schema)
+func Open(ctx context.Context, path string) (*Store, error) {
+	db, err := duckdb.Open(ctx, path, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -65,20 +74,30 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	return err
 }
 
-func (s *Store) Begin(kind, name string, attrs map[string]string) (int64, error) {
+func (s *Store) Begin(ctx context.Context, kind, name string, attrs map[string]string) (int64, error) {
 	if s == nil || s.db == nil {
-		return 0, errUnavailable
+		return 0, ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var id int64
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(ctx,
 		`INSERT INTO runs (kind, name, started_at, attrs) VALUES (?, ?, ?, ?) RETURNING id`,
 		kind, name, time.Now(), marshalAttrs(attrs),
 	).Scan(&id)
@@ -88,33 +107,39 @@ func (s *Store) Begin(kind, name string, attrs map[string]string) (int64, error)
 	return id, nil
 }
 
-func (s *Store) RollUp(id int64) error {
+func (s *Store) RollUp(ctx context.Context, id int64) error {
 	if s == nil || s.db == nil || id == 0 {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE runs SET finished_at = ?,
 		   count = coalesce((SELECT sum(count) FROM runs WHERE parent_id = ?), 0)
 		 WHERE id = ?`, time.Now(), id, id)
 	return err
 }
 
-func (s *Store) Add(run Run, records []Record) (int64, error) {
+func (s *Store) Add(ctx context.Context, run Run, records []Record) (int64, error) {
 	if s == nil || s.db == nil {
-		return 0, errUnavailable
+		return 0, ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
 	var id int64
-	if err := tx.QueryRow(
+	if err := tx.QueryRowContext(ctx,
 		`INSERT INTO runs (parent_id, kind, name, started_at, finished_at, count, error, attrs)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 		duckdb.NullInt(run.ParentID), run.Kind, run.Name, run.Started, run.Finished,
@@ -123,7 +148,7 @@ func (s *Store) Add(run Run, records []Record) (int64, error) {
 		return 0, err
 	}
 	for _, r := range records {
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO records (run_id, ts, attrs) VALUES (?, ?, ?)`,
 			id, duckdb.NullTime(r.Ts), marshalAttrs(r.Attrs),
 		); err != nil {
@@ -136,30 +161,30 @@ func (s *Store) Add(run Run, records []Record) (int64, error) {
 	return id, nil
 }
 
-func (s *Store) Recent(limit int) ([]Run, error) {
+func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
 	if limit <= 0 {
 		limit = 20
 	}
-	return s.queryRuns(`SELECT id, kind, name, started_at, finished_at, count, error, attrs
+	return s.queryRuns(ctx, `SELECT id, kind, name, started_at, finished_at, count, error, attrs
 		FROM runs WHERE parent_id IS NULL ORDER BY started_at DESC LIMIT ?`, limit)
 }
 
-func (s *Store) Children(parentID int64) ([]Run, error) {
+func (s *Store) Children(ctx context.Context, parentID int64) ([]Run, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
-	return s.queryRuns(`SELECT id, kind, name, started_at, finished_at, count, error, attrs
+	return s.queryRuns(ctx, `SELECT id, kind, name, started_at, finished_at, count, error, attrs
 		FROM runs WHERE parent_id = ? ORDER BY started_at`, parentID)
 }
 
-func (s *Store) Get(id int64) (Run, bool, error) {
+func (s *Store) Get(ctx context.Context, id int64) (Run, bool, error) {
 	if s == nil || s.db == nil {
 		return Run{}, false, nil
 	}
-	runs, err := s.queryRuns(`SELECT id, kind, name, started_at, finished_at, count, error, attrs
+	runs, err := s.queryRuns(ctx, `SELECT id, kind, name, started_at, finished_at, count, error, attrs
 		FROM runs WHERE id = ?`, id)
 	if err != nil || len(runs) == 0 {
 		return Run{}, false, err
@@ -167,13 +192,16 @@ func (s *Store) Get(id int64) (Run, bool, error) {
 	return runs[0], true, nil
 }
 
-func (s *Store) Records(runID int64) ([]Record, error) {
+func (s *Store) Records(ctx context.Context, runID int64) ([]Record, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(`SELECT ts, attrs FROM records WHERE run_id = ? ORDER BY ts DESC`, runID)
+	rows, err := s.db.QueryContext(ctx, `SELECT ts, attrs FROM records WHERE run_id = ? ORDER BY ts DESC`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -192,10 +220,27 @@ func (s *Store) Records(runID int64) ([]Record, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) queryRuns(query string, args ...any) ([]Run, error) {
+// Query runs an ad-hoc SQL statement against the open journal and returns a
+// string table. Intended for read-only inspection UIs.
+func (s *Store) Query(ctx context.Context, query string, args ...any) (Result, error) {
+	if s == nil || s.db == nil {
+		return Result{}, ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(query, args...)
+	return queryDB(ctx, s.db, query, args...)
+}
+
+func (s *Store) queryRuns(ctx context.Context, query string, args ...any) ([]Run, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -214,6 +259,51 @@ func (s *Store) queryRuns(query string, args ...any) ([]Run, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func queryDB(ctx context.Context, db *sql.DB, query string, args ...any) (Result, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return Result{}, err
+	}
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return Result{}, err
+	}
+	var data [][]string
+	for rows.Next() {
+		cells := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range cells {
+			ptrs[i] = &cells[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return Result{}, err
+		}
+		row := make([]string, len(cols))
+		for i, c := range cells {
+			row[i] = cellString(c)
+		}
+		data = append(data, row)
+	}
+	if err := rows.Err(); err != nil {
+		return Result{}, err
+	}
+	return Result{Columns: cols, Rows: data}, nil
+}
+
+func cellString(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "NULL"
+	case []byte:
+		return string(t)
+	case string:
+		return t
+	default:
+		return fmt.Sprint(t)
+	}
 }
 
 func marshalAttrs(m map[string]string) any {

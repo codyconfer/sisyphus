@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -33,14 +34,14 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) Name() string { return "fake" }
-func (f *fakeStore) Get(k string) (string, bool, error) {
+func (f *fakeStore) Get(ctx context.Context, k string) (string, bool, error) {
 	if f.getErr != nil {
 		return "", false, f.getErr
 	}
 	v, ok := f.m[k]
 	return v, ok, nil
 }
-func (f *fakeStore) Set(k, v string) error {
+func (f *fakeStore) Set(ctx context.Context, k, v string) error {
 	if f.setErr != nil {
 		return f.setErr
 	}
@@ -51,47 +52,47 @@ func (f *fakeStore) Set(k, v string) error {
 
 func stub(bw, op bool) func() {
 	origBW, origOP := bwAvailable, opAvailable
-	bwAvailable = func() bool { return bw }
-	opAvailable = func() bool { return op }
+	bwAvailable = func(context.Context) bool { return bw }
+	opAvailable = func(context.Context) bool { return op }
 	return func() { bwAvailable, opAvailable = origBW, origOP }
 }
 
 func TestResolveAutoPriority(t *testing.T) {
 	defer stub(true, true)()
-	if s, err := Resolve("auto", ""); err != nil || s.Name() != "bitwarden" {
+	if s, err := Resolve(context.Background(), "auto", ""); err != nil || s.Name() != "bitwarden" {
 		t.Fatalf("auto with bw+op = %v, %v", s, err)
 	}
 }
 
 func TestResolveAutoFallsThrough(t *testing.T) {
 	restore := stub(false, true)
-	if s, err := Resolve("", ""); err != nil || s.Name() != "1password" {
+	if s, err := Resolve(context.Background(), "", ""); err != nil || s.Name() != "1password" {
 		t.Fatalf("auto with op only = %v, %v", s, err)
 	}
 	restore()
 
 	defer stub(false, false)()
-	if s, err := Resolve("auto", ""); err != nil || s.Name() != "os-keyring" {
+	if s, err := Resolve(context.Background(), "auto", ""); err != nil || s.Name() != "os-keyring" {
 		t.Fatalf("auto with neither = %v, %v", s, err)
 	}
 }
 
 func TestResolveExplicitUnconfigured(t *testing.T) {
 	defer stub(false, false)()
-	if _, err := Resolve("bitwarden", ""); err == nil {
+	if _, err := Resolve(context.Background(), "bitwarden", ""); err == nil {
 		t.Error("explicit bitwarden when unavailable should error")
 	}
-	if _, err := Resolve("1password", ""); err == nil {
+	if _, err := Resolve(context.Background(), "1password", ""); err == nil {
 		t.Error("explicit 1password when unavailable should error")
 	}
-	if _, err := Resolve("nonsense", ""); err == nil {
+	if _, err := Resolve(context.Background(), "nonsense", ""); err == nil {
 		t.Error("unknown backend should error")
 	}
 }
 
 func TestKeyringServiceInjected(t *testing.T) {
 	defer stub(false, false)()
-	s, err := Resolve("keyring", "myapp")
+	s, err := Resolve(context.Background(), "keyring", "myapp")
 	if err != nil {
 		t.Fatalf("Resolve keyring: %v", err)
 	}
@@ -112,11 +113,11 @@ func TestGetOrCreate(t *testing.T) {
 	genCalls := 0
 	gen := func() (string, error) { genCalls++; return "generated", nil }
 
-	v, err := GetOrCreate(fs, "k", gen)
+	v, err := GetOrCreate(context.Background(), fs, "k", gen)
 	if err != nil || v != "generated" || fs.setHits != 1 {
 		t.Fatalf("first GetOrCreate = %q, %v (sets=%d)", v, err, fs.setHits)
 	}
-	v, err = GetOrCreate(fs, "k", gen)
+	v, err = GetOrCreate(context.Background(), fs, "k", gen)
 	if err != nil || v != "generated" || genCalls != 1 || fs.setHits != 1 {
 		t.Fatalf("second GetOrCreate regenerated: v=%q gen=%d sets=%d", v, genCalls, fs.setHits)
 	}
@@ -126,7 +127,7 @@ func TestGetOrCreateReadErrorDoesNotMint(t *testing.T) {
 	fs := &fakeStore{m: map[string]string{}, getErr: errFake}
 	genCalls := 0
 	gen := func() (string, error) { genCalls++; return "generated", nil }
-	if _, err := GetOrCreate(fs, "k", gen); err == nil {
+	if _, err := GetOrCreate(context.Background(), fs, "k", gen); err == nil {
 		t.Fatal("want error when Get fails")
 	}
 	if genCalls != 0 || fs.setHits != 0 {

@@ -30,6 +30,14 @@ packages require CGO (via `github.com/marcboeker/go-duckdb/v2`).
 | `sisyphus/journal` | Generic activity log in DuckDB: nested parent/child runs + records, each with a free-form string attribute map. |
 | `sisyphus/secret` | Key escrow via the Bitwarden (`bw`) or 1Password (`op`) CLI, or the OS keyring. |
 | `sisyphus/backup` | tar archive + AES-256-GCM encrypt/decrypt/restore. |
+| `sisyphus/store` | Ad-hoc DuckDB file queries (read-only at the app layer). |
+| `sisyphus/sealed` | Encrypted credential store (AES-GCM over `kv`; key in OS keyring). |
+| `sisyphus/auth` | OAuth loopback · device flow · `RunTool` CLI helper. |
+| `sisyphus/mode` | Operating modes + injectable auth gate hooks. |
+| `sisyphus/lifecycle` | Home-dir install / clean / nuke primitives. |
+| `sisyphus/daemon` | Streaming core: poll/fan-in/dedupe, sockets (pipe-prefix param on Windows), cursors. |
+| `sisyphus/daemon/service` | OS service install/start/stop wrapper. |
+| `sisyphus/daemon/ui` | System tray + desktop notifications. |
 
 Each sub-package is usable on its own. A nil `*Store` is a valid no-op across the
 DuckDB packages, so "disabled" and "open failed" behave uniformly.
@@ -57,12 +65,13 @@ Everything application-specific is injected, never baked in:
 auto-imports — you decide via a `Resolver` when file and DB disagree.
 
 ```go
-m, err := sisyphus.Open(home, sisyphus.Options{}) // ModeBoth; ConfigDBName defaults to config.duckdb
+ctx := context.Background()
+m, err := sisyphus.Open(ctx, home, sisyphus.Options{}) // ModeBoth; ConfigDBName defaults to config.duckdb
 if err != nil { /* ... */ }
 defer m.Close()
 
 raw, format, _ := config.ReadFile(home)
-content, format, err := m.Reconcile("config", raw, format, len(raw) > 0, myResolver)
+content, format, err := m.Reconcile(ctx, "config", raw, format, len(raw) > 0, myResolver)
 // then: config.ParseInto(&myCfg, content, format, "MYAPP_")
 ```
 
@@ -74,7 +83,8 @@ operations; `DB()` exposes the underlying `*configdb.Store` for anything more.
 ### Encrypted, key-escrowed backups
 
 ```go
-sealed, store, err := sisyphus.Backup(sisyphus.BackupSpec{
+ctx := context.Background()
+sealed, store, err := sisyphus.Backup(ctx, sisyphus.BackupSpec{
     Files:         []string{cfgDB, dataDB},
     SecretBackend: "auto",       // bw → op → OS keyring
     SecretService: "myapp",      // keyring service name
@@ -82,7 +92,7 @@ sealed, store, err := sisyphus.Backup(sisyphus.BackupSpec{
 })
 // ... write `sealed` somewhere ...
 
-names, _, err := sisyphus.Restore(sisyphus.RestoreSpec{
+names, _, err := sisyphus.Restore(ctx, sisyphus.RestoreSpec{
     Sealed: sealed, SecretBackend: "auto", SecretService: "myapp",
     SecretName: "backup-key", DestDir: home,
 })
@@ -95,27 +105,38 @@ independent of `Manager` so restore works even when the config DB is corrupt.
 ### KV and journal
 
 ```go
-store, _ := kv.Open(filepath.Join(home, "tokens.duckdb"))
-_ = store.Put("tokens", "github", jsonBlob, time.Time{}) // zero time = no expiry
-entry, ok, _ := store.Get("tokens", "github")
+ctx := context.Background()
+store, _ := kv.Open(ctx, filepath.Join(home, "tokens.duckdb"))
+_ = store.Put(ctx, "tokens", "github", jsonBlob, time.Time{}) // zero time = no expiry
+entry, ok, _ := store.Get(ctx, "tokens", "github")
 
-log, _ := journal.Open(filepath.Join(home, "audit.duckdb"))
-parent, _ := log.Begin("job", "nightly", map[string]string{"env": "prod"})
-_, _ = log.Add(journal.Run{ParentID: parent, Kind: "step", Name: "sync", Count: 3}, records)
-_ = log.RollUp(parent) // roll child counts up into the parent
+log, _ := journal.Open(ctx, filepath.Join(home, "audit.duckdb"))
+parent, _ := log.Begin(ctx, "job", "nightly", map[string]string{"env": "prod"})
+_, _ = log.Add(ctx, journal.Run{ParentID: parent, Kind: "step", Name: "sync", Count: 3}, records)
+_ = log.RollUp(ctx, parent) // roll child counts up into the parent
 ```
 
 ## Development
 
 ```sh
-go build ./...
-go vet ./...
-go test ./...
+make build          # go build ./...
+make check          # build + fmt-check + lint + govulncheck + test (CI gate is `make ci`)
+make test           # go test ./...
 ```
+
+Linters live in the nested `tools/` module (`go tool -modfile=tools/go.mod`) so
+they stay out of the consumer dependency graph.
 
 Tests run offline. The secret backends shell out to `bw`/`op` only when present;
 their availability probes are stubbable, and the keyring path is tested with
 go-keyring's mock.
+
+### Local multi-repo development (`go.work`)
+
+When editing sisyphus alongside munin/viewkit, use an **uncommitted** `go.work`
+in the consumer (typically munin) that `use`s the sibling checkouts. Do not
+commit `go.work` / `go.work.sum` (gitignored here) and do not add committed
+`replace` directives — CI and published consumers build against tagged pins.
 
 ## License
 

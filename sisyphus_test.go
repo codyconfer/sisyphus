@@ -1,6 +1,7 @@
 package sisyphus
 
 import (
+	"context"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -22,7 +23,7 @@ func (f *fakeResolver) Resolve(r Reconciliation) (Action, error) {
 
 func openMgr(t *testing.T) *Manager {
 	t.Helper()
-	m, err := Open(t.TempDir(), Options{})
+	m, err := Open(context.Background(), t.TempDir(), Options{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -34,7 +35,7 @@ func TestReconcileNoFileEmptyDB(t *testing.T) {
 	m := openMgr(t)
 	r := &fakeResolver{action: ActionUseFile}
 
-	content, format, err := m.Reconcile("config", nil, "yaml", false, r)
+	content, format, err := m.Reconcile(context.Background(), "config", nil, "yaml", false, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -52,12 +53,12 @@ func TestReconcileNoFileEmptyDB(t *testing.T) {
 func TestReconcileNoFileWithDB(t *testing.T) {
 	m := openMgr(t)
 	stored := []byte("output: json\n")
-	if err := m.Import("config", stored, "yaml"); err != nil {
+	if err := m.Import(context.Background(), "config", stored, "yaml"); err != nil {
 		t.Fatalf("seed Import: %v", err)
 	}
 	r := &fakeResolver{action: ActionUseFile}
 
-	content, format, err := m.Reconcile("config", nil, "yaml", false, r)
+	content, format, err := m.Reconcile(context.Background(), "config", nil, "yaml", false, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestReconcileFileEmptyDBImport(t *testing.T) {
 	file := []byte("output: terminal\n")
 	r := &fakeResolver{action: ActionImport}
 
-	content, format, err := m.Reconcile("config", file, "yaml", true, r)
+	content, format, err := m.Reconcile(context.Background(), "config", file, "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -91,7 +92,7 @@ func TestReconcileFileEmptyDBImport(t *testing.T) {
 		t.Errorf("HasDB = true, want false (empty DB)")
 	}
 
-	content, _, err = m.Reconcile("config", file, "yaml", true, r)
+	content, _, err = m.Reconcile(context.Background(), "config", file, "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile #2: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestReconcileFileEmptyDBUseFile(t *testing.T) {
 	file := []byte("output: terminal\n")
 	r := &fakeResolver{action: ActionUseFile}
 
-	content, format, err := m.Reconcile("config", file, "yaml", true, r)
+	content, format, err := m.Reconcile(context.Background(), "config", file, "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestReconcileFileEmptyDBUseFile(t *testing.T) {
 		t.Errorf("resolver called %d times, want 1", r.calls)
 	}
 
-	if _, ok, err := m.Current("config"); ok || err != nil {
+	if _, ok, err := m.Current(context.Background(), "config"); ok || err != nil {
 		t.Errorf("DB should be empty after UseFile: ok=%v err=%v", ok, err)
 	}
 }
@@ -129,7 +130,7 @@ func TestReconcileFileEmptyDBUseDB(t *testing.T) {
 	file := []byte("output: terminal\n")
 	r := &fakeResolver{action: ActionUseDB}
 
-	content, format, err := m.Reconcile("config", file, "yaml", true, r)
+	content, format, err := m.Reconcile(context.Background(), "config", file, "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -147,12 +148,12 @@ func TestReconcileFileEmptyDBUseDB(t *testing.T) {
 func TestReconcileFileIdenticalToDB(t *testing.T) {
 	m := openMgr(t)
 	file := []byte("output: terminal\n")
-	if err := m.Import("config", file, "yaml"); err != nil {
+	if err := m.Import(context.Background(), "config", file, "yaml"); err != nil {
 		t.Fatalf("seed Import: %v", err)
 	}
 	r := &fakeResolver{action: ActionImport}
 
-	content, format, err := m.Reconcile("config", file, "yaml", true, r)
+	content, format, err := m.Reconcile(context.Background(), "config", file, "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -167,13 +168,13 @@ func TestReconcileFileIdenticalToDB(t *testing.T) {
 func TestReconcileFileDiffersFromDB(t *testing.T) {
 	m := openMgr(t)
 	old := []byte("output: json\n")
-	if err := m.Import("config", old, "yaml"); err != nil {
+	if err := m.Import(context.Background(), "config", old, "yaml"); err != nil {
 		t.Fatalf("seed Import: %v", err)
 	}
 	file := []byte("output: terminal\n")
 	r := &fakeResolver{action: ActionUseDB}
 
-	content, format, err := m.Reconcile("config", file, "yaml", true, r)
+	content, format, err := m.Reconcile(context.Background(), "config", file, "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -192,14 +193,14 @@ func TestReconcileFileDiffersFromDB(t *testing.T) {
 }
 
 func TestReconcileModeFileStore(t *testing.T) {
-	m, err := Open(t.TempDir(), Options{Mode: ModeFileStore})
+	m, err := Open(context.Background(), t.TempDir(), Options{Mode: ModeFileStore})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
 	r := &fakeResolver{action: ActionImport}
 	file := []byte("x: 1\n")
-	content, format, err := m.Reconcile("config", file, "yaml", true, r)
+	content, format, err := m.Reconcile(context.Background(), "config", file, "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -209,17 +210,17 @@ func TestReconcileModeFileStore(t *testing.T) {
 }
 
 func TestReconcileModeDuckDB(t *testing.T) {
-	m, err := Open(t.TempDir(), Options{Mode: ModeDuckDB})
+	m, err := Open(context.Background(), t.TempDir(), Options{Mode: ModeDuckDB})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
 	stored := []byte("from: db\n")
-	if err := m.Import("config", stored, "yaml"); err != nil {
+	if err := m.Import(context.Background(), "config", stored, "yaml"); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	r := &fakeResolver{action: ActionUseFile}
-	content, _, err := m.Reconcile("config", []byte("from: file\n"), "yaml", true, r)
+	content, _, err := m.Reconcile(context.Background(), "config", []byte("from: file\n"), "yaml", true, r)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -230,12 +231,12 @@ func TestReconcileModeDuckDB(t *testing.T) {
 
 func TestConfigDBNameOption(t *testing.T) {
 	home := t.TempDir()
-	m, err := Open(home, Options{ConfigDBName: "state.duckdb"})
+	m, err := Open(context.Background(), home, Options{ConfigDBName: "state.duckdb"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { m.Close() })
-	if err := m.Import("config", []byte("a: 1\n"), "yaml"); err != nil {
+	if err := m.Import(context.Background(), "config", []byte("a: 1\n"), "yaml"); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(home, "state.duckdb")); err != nil {

@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"context"
 	"errors"
 
 	"github.com/zalando/go-keyring"
@@ -19,7 +20,10 @@ func newKeyringStore(service string) keyringStore {
 
 func (keyringStore) Name() string { return "os-keyring" }
 
-func (k keyringStore) Get(key string) (string, bool, error) {
+func (k keyringStore) Get(ctx context.Context, key string) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
 	v, err := keyring.Get(k.service, key)
 	if errors.Is(err, keyring.ErrNotFound) {
 		return "", false, nil
@@ -30,6 +34,9 @@ func (k keyringStore) Get(key string) (string, bool, error) {
 	return v, true, nil
 }
 
-func (k keyringStore) Set(key, value string) error {
+func (k keyringStore) Set(ctx context.Context, key, value string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return keyring.Set(k.service, key, value)
 }

@@ -64,8 +64,10 @@ func broadcastConn[T any](ctx context.Context, conn net.Conn, subj *Subject[T], 
 	}
 }
 
-func Dial[T any](ctx context.Context, name string, decode func([]byte) (T, error)) (<-chan T, error) {
-	conn, err := dialConn(ctx, name)
+// Dial connects to a Broadcast listener. prefix is used on Windows named pipes
+// and ignored on Unix (where name is the socket path).
+func Dial[T any](ctx context.Context, prefix, name string, decode func([]byte) (T, error)) (<-chan T, error) {
+	conn, err := dialConn(ctx, prefix, name)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package sisyphus
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 
@@ -15,16 +16,16 @@ type BackupSpec struct {
 	SecretService string
 }
 
-func Backup(spec BackupSpec) (sealed []byte, storeName string, err error) {
-	store, err := secret.Resolve(spec.SecretBackend, spec.SecretService)
+func Backup(ctx context.Context, spec BackupSpec) (sealed []byte, storeName string, err error) {
+	store, err := secret.Resolve(ctx, spec.SecretBackend, spec.SecretService)
 	if err != nil {
 		return nil, "", err
 	}
-	key, err := getOrCreateKey(store, spec.SecretName)
+	key, err := getOrCreateKey(ctx, store, spec.SecretName)
 	if err != nil {
 		return nil, "", err
 	}
-	archive, err := backup.Archive(spec.Files)
+	archive, err := backup.Archive(ctx, spec.Files)
 	if err != nil {
 		return nil, "", err
 	}
@@ -43,16 +44,16 @@ type RestoreSpec struct {
 	DestDir       string
 }
 
-func Restore(spec RestoreSpec) (names []string, storeName string, err error) {
-	store, err := secret.Resolve(spec.SecretBackend, spec.SecretService)
+func Restore(ctx context.Context, spec RestoreSpec) (names []string, storeName string, err error) {
+	store, err := secret.Resolve(ctx, spec.SecretBackend, spec.SecretService)
 	if err != nil {
 		return nil, "", err
 	}
-	key, err := readKey(store, spec.SecretName)
+	key, err := readKey(ctx, store, spec.SecretName)
 	if err != nil {
 		return nil, "", err
 	}
-	names, err = backup.Restore(spec.Sealed, key, spec.DestDir)
+	names, err = backup.Restore(ctx, spec.Sealed, key, spec.DestDir)
 	return names, store.Name(), err
 }
 
@@ -63,9 +64,9 @@ func keyName(name string) string {
 	return name
 }
 
-func readKey(store secret.Store, name string) ([]byte, error) {
+func readKey(ctx context.Context, store secret.Store, name string) ([]byte, error) {
 	name = keyName(name)
-	v, ok, err := store.Get(name)
+	v, ok, err := store.Get(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("%s: reading %q: %w", store.Name(), name, err)
 	}
@@ -75,9 +76,9 @@ func readKey(store secret.Store, name string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(v)
 }
 
-func getOrCreateKey(store secret.Store, name string) ([]byte, error) {
+func getOrCreateKey(ctx context.Context, store secret.Store, name string) ([]byte, error) {
 	name = keyName(name)
-	v, err := secret.GetOrCreate(store, name, func() (string, error) {
+	v, err := secret.GetOrCreate(ctx, store, name, func() (string, error) {
 		k, err := backup.NewKey()
 		if err != nil {
 			return "", err

@@ -12,7 +12,7 @@ import (
 // this guards only that a legitimate same-UID dial is not wrongly refused.
 func TestAllowPeerAcceptsSameUID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.sock")
-	ln, err := Listen(path)
+	ln, err := Listen("test", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +22,7 @@ func TestAllowPeerAcceptsSameUID(t *testing.T) {
 	defer subj.Close()
 	go Broadcast(t.Context(), ln, subj, 8, encodeInt)
 
-	ch, err := Dial(t.Context(), path, decodeInt)
+	ch, err := Dial(t.Context(), "test", path, decodeInt)
 	if err != nil {
 		t.Fatal(err)
 	}

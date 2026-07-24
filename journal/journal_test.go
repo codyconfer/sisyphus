@@ -1,6 +1,8 @@
 package journal
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -8,7 +10,7 @@ import (
 
 func openTemp(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "journal.duckdb"))
+	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "journal.duckdb"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -20,23 +22,23 @@ func TestBeginRollUpChildren(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
 
-	parent, err := s.Begin("job", "nightly", map[string]string{"env": "prod"})
+	parent, err := s.Begin(context.Background(), "job", "nightly", map[string]string{"env": "prod"})
 	if err != nil || parent == 0 {
 		t.Fatalf("Begin = %d, %v", parent, err)
 	}
-	if _, err := s.Add(Run{ParentID: parent, Kind: "query", Name: "a", Started: now, Finished: now, Count: 2},
+	if _, err := s.Add(context.Background(), Run{ParentID: parent, Kind: "query", Name: "a", Started: now, Finished: now, Count: 2},
 		[]Record{{Ts: now, Attrs: map[string]string{"title": "x"}}, {Attrs: map[string]string{"title": "y"}}}); err != nil {
 		t.Fatalf("Add a: %v", err)
 	}
-	if _, err := s.Add(Run{ParentID: parent, Kind: "query", Name: "b", Started: now, Finished: now, Count: 1},
+	if _, err := s.Add(context.Background(), Run{ParentID: parent, Kind: "query", Name: "b", Started: now, Finished: now, Count: 1},
 		[]Record{{Attrs: map[string]string{"title": "z"}}}); err != nil {
 		t.Fatalf("Add b: %v", err)
 	}
-	if err := s.RollUp(parent); err != nil {
+	if err := s.RollUp(context.Background(), parent); err != nil {
 		t.Fatalf("RollUp: %v", err)
 	}
 
-	top, err := s.Recent(10)
+	top, err := s.Recent(context.Background(), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,11 +55,11 @@ func TestBeginRollUpChildren(t *testing.T) {
 		t.Error("RollUp should set finished")
 	}
 
-	children, err := s.Children(parent)
+	children, err := s.Children(context.Background(), parent)
 	if err != nil || len(children) != 2 {
 		t.Fatalf("Children = %v, %v", children, err)
 	}
-	recs, err := s.Records(children[0].ID)
+	recs, err := s.Records(context.Background(), children[0].ID)
 	if err != nil || len(recs) != 2 {
 		t.Fatalf("Records = %v, %v", recs, err)
 	}
@@ -69,43 +71,77 @@ func TestBeginRollUpChildren(t *testing.T) {
 func TestAddStandaloneWithError(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
-	id, err := s.Add(Run{Kind: "write", Name: "tasks add", Started: now, Finished: now, Count: 1, Error: "boom"}, nil)
+	id, err := s.Add(context.Background(), Run{Kind: "write", Name: "tasks add", Started: now, Finished: now, Count: 1, Error: "boom"}, nil)
 	if err != nil || id == 0 {
 		t.Fatalf("Add = %d, %v", id, err)
 	}
-	got, ok, err := s.Get(id)
+	got, ok, err := s.Get(context.Background(), id)
 	if err != nil || !ok || got.Error != "boom" || got.Kind != "write" {
 		t.Fatalf("Get = %+v ok=%v err=%v", got, ok, err)
 	}
-	if top, _ := s.Recent(10); len(top) != 1 {
+	if top, _ := s.Recent(context.Background(), 10); len(top) != 1 {
 		t.Fatalf("Recent = %d, want 1", len(top))
 	}
 }
 
 func TestNilStore(t *testing.T) {
 	var s *Store
-	if id, err := s.Begin("k", "n", nil); id != 0 || err == nil {
+	if id, err := s.Begin(context.Background(), "k", "n", nil); id != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Begin = %d, %v", id, err)
 	}
-	if id, err := s.Add(Run{}, nil); id != 0 || err == nil {
+	if id, err := s.Add(context.Background(), Run{}, nil); id != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Add = %d, %v", id, err)
 	}
-	if err := s.RollUp(1); err != nil {
+	if err := s.RollUp(context.Background(), 1); err != nil {
 		t.Errorf("nil RollUp = %v", err)
 	}
-	if runs, err := s.Recent(5); err != nil || runs != nil {
+	if runs, err := s.Recent(context.Background(), 5); err != nil || runs != nil {
 		t.Errorf("nil Recent = %v %v", runs, err)
 	}
-	if runs, err := s.Children(1); err != nil || runs != nil {
+	if runs, err := s.Children(context.Background(), 1); err != nil || runs != nil {
 		t.Errorf("nil Children = %v %v", runs, err)
 	}
-	if run, ok, err := s.Get(1); err != nil || ok || run.ID != 0 {
+	if run, ok, err := s.Get(context.Background(), 1); err != nil || ok || run.ID != 0 {
 		t.Errorf("nil Get = %+v %v %v", run, ok, err)
 	}
-	if recs, err := s.Records(1); err != nil || recs != nil {
+	if recs, err := s.Records(context.Background(), 1); err != nil || recs != nil {
 		t.Errorf("nil Records = %v %v", recs, err)
+	}
+	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Query = %v, want ErrUnavailable", err)
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
+	}
+}
+
+func TestClosedStoreUnavailable(t *testing.T) {
+	s := openTemp(t)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Begin(context.Background(), "k", "n", nil); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Begin = %v, want ErrUnavailable", err)
+	}
+	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Query = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestQuery(t *testing.T) {
+	s := openTemp(t)
+	id, err := s.Begin(context.Background(), "job", "q", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Query(context.Background(), `SELECT kind, name FROM runs WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Columns) != 2 || len(res.Rows) != 1 {
+		t.Fatalf("Query = %+v", res)
+	}
+	if res.Rows[0][0] != "job" || res.Rows[0][1] != "q" {
+		t.Fatalf("row = %v", res.Rows[0])
 	}
 }

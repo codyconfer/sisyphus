@@ -15,10 +15,18 @@ import (
 
 const dialProbeTimeout = 200 * time.Millisecond
 
-func pipeName(name string) string {
+// DefaultPipePrefix is used when Listen/Dial/IsListening are called with an
+// empty prefix. Apps should pass their own prefix (e.g. "munin") so pipe names
+// stay stable and this library carries no app literals.
+const DefaultPipePrefix = "sisyphus"
+
+func pipeName(prefix, name string) string {
+	if prefix == "" {
+		prefix = DefaultPipePrefix
+	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(name))
-	return fmt.Sprintf(`\\.\pipe\munin-%08x`, h.Sum32())
+	return fmt.Sprintf(`\\.\pipe\%s-%08x`, prefix, h.Sum32())
 }
 
 func ownerOnlySDDL() string {
@@ -28,17 +36,18 @@ func ownerOnlySDDL() string {
 	return "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)"
 }
 
-func Listen(name string) (net.Listener, error) {
-	return winio.ListenPipe(pipeName(name), &winio.PipeConfig{SecurityDescriptor: ownerOnlySDDL()})
+// Listen opens a Windows named pipe derived from prefix+name.
+func Listen(prefix, name string) (net.Listener, error) {
+	return winio.ListenPipe(pipeName(prefix, name), &winio.PipeConfig{SecurityDescriptor: ownerOnlySDDL()})
 }
 
-func dialConn(ctx context.Context, name string) (net.Conn, error) {
-	return winio.DialPipeContext(ctx, pipeName(name))
+func dialConn(ctx context.Context, prefix, name string) (net.Conn, error) {
+	return winio.DialPipeContext(ctx, pipeName(prefix, name))
 }
 
-func IsListening(name string) bool {
+func IsListening(prefix, name string) bool {
 	timeout := dialProbeTimeout
-	conn, err := winio.DialPipe(pipeName(name), &timeout)
+	conn, err := winio.DialPipe(pipeName(prefix, name), &timeout)
 	if err != nil {
 		return false
 	}
