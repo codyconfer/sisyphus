@@ -87,9 +87,17 @@ func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (acce
 	if opts.PollInterval > 0 {
 		interval = opts.PollInterval
 	}
+	// Clamp so maxPolls never divides by zero (sub-second PollInterval).
+	if interval < time.Second {
+		interval = time.Second
+	}
 	maxPolls := 12
 	if dc.ExpiresIn > 0 {
-		maxPolls = dc.ExpiresIn/int(interval/time.Second) + 1
+		secs := int(interval / time.Second)
+		if secs < 1 {
+			secs = 1
+		}
+		maxPolls = dc.ExpiresIn/secs + 1
 	}
 
 	poll := url.Values{
