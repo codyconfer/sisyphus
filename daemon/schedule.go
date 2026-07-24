@@ -23,6 +23,10 @@ type ScheduleJob struct {
 
 // Schedule repeatedly scans jobs for due work until ctx is canceled.
 // interval is the idle poll when no job reports a future At.
+//
+// Transient Next/Run errors (e.g. DuckDB lock from a concurrent CLI) do not
+// abort the loop — Schedule backs off for interval and continues. Only ctx
+// cancel ends the scanner (returns nil).
 func Schedule(ctx context.Context, interval time.Duration, jobs ...ScheduleJob) error {
 	if interval <= 0 {
 		interval = time.Second
@@ -34,17 +38,20 @@ func Schedule(ctx context.Context, interval time.Duration, jobs ...ScheduleJob) 
 		}
 		now := nowFn()
 		var soonest time.Time
+		hadErr := false
 		for _, job := range jobs {
 			if job.Next == nil || job.Run == nil {
 				continue
 			}
 			due, err := job.Next(ctx, now)
 			if err != nil {
-				return err
+				hadErr = true
+				continue
 			}
 			if due.Ready || (!due.At.IsZero() && !due.At.After(now)) {
 				if err := job.Run(ctx); err != nil {
-					return err
+					hadErr = true
+					continue
 				}
 				continue
 			}
@@ -56,10 +63,8 @@ func Schedule(ctx context.Context, interval time.Duration, jobs ...ScheduleJob) 
 			}
 		}
 		wait := interval
-		if !soonest.IsZero() {
-			if d := time.Until(soonest); d > 0 && d < wait {
-				wait = d
-			} else if d := time.Until(soonest); d > 0 {
+		if !hadErr && !soonest.IsZero() {
+			if d := time.Until(soonest); d > 0 {
 				wait = d
 			}
 		}
