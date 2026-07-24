@@ -40,3 +40,29 @@ func TestQueryCanceled(t *testing.T) {
 		t.Fatal("expected canceled context error")
 	}
 }
+
+func TestOpenSchemaRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "plugin.duckdb")
+	db, err := Open(ctx, path, `CREATE TABLE IF NOT EXISTS notes (id INTEGER, body VARCHAR);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if db.Path() != path {
+		t.Fatalf("Path = %q", db.Path())
+	}
+	if err := db.Exec(ctx, `INSERT INTO notes VALUES (1, 'hi')`); err != nil {
+		t.Fatal(err)
+	}
+	res, err := db.Query(ctx, `SELECT body FROM notes WHERE id = 1`)
+	if err != nil || len(res.Rows) != 1 || res.Rows[0][0] != "hi" {
+		t.Fatalf("Query = %+v err=%v", res, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(ctx, `SELECT 1`); err == nil {
+		t.Fatal("closed Exec should fail")
+	}
+}

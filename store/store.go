@@ -15,8 +15,9 @@ type Result struct {
 }
 
 // Query opens path read/write (DuckDB requirement) without applying a schema
-// and runs query, returning a string table. Callers should restrict statements
-// to read-only forms at the application layer.
+// and runs query, returning a string table. For long-lived plugin stores prefer
+// Open(ctx, path, schema). Callers should restrict statements to read-only
+// forms at the application layer.
 func Query(ctx context.Context, path, query string, args ...any) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
