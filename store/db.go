@@ -30,6 +30,7 @@ func Open(ctx context.Context, path, schema string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	RegisterBackupPath(path)
 	return &DB{db: db, path: path}, nil
 }
 
