@@ -26,15 +26,23 @@ type DeviceCode struct {
 type DeviceFlowOptions struct {
 	ClientID     string
 	Scope        string
-	CodeURL      string // e.g. https://github.com/login/device/code
-	TokenURL     string // e.g. https://github.com/login/oauth/access_token
+	CodeURL      string
+	TokenURL     string
 	Product      string
 	HTTPClient   *http.Client
 	Open         func(url string) error
 	PollInterval time.Duration
+	// Sleep is used between polls (defaults to time.Sleep). Tests inject a stub.
+	Sleep func(time.Duration)
 }
 
-// DeviceToken runs the device flow and returns the access token JSON body.
+// ErrDeviceDenied is returned when the user denies the device authorization.
+var ErrDeviceDenied = errors.New("authorization was denied")
+
+// ErrDeviceExpired is returned when the device code expires before approval.
+var ErrDeviceExpired = errors.New("device code expired before authorization")
+
+// DeviceToken runs the device flow and returns the access token (+ scope).
 func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (accessToken, scope string, err error) {
 	if opts.ClientID == "" || opts.CodeURL == "" || opts.TokenURL == "" {
 		return "", "", errors.New("device flow: ClientID, CodeURL, and TokenURL are required")
@@ -47,6 +55,10 @@ func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (acce
 	if open == nil {
 		open = OpenURL
 	}
+	sleep := opts.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
 	product := opts.Product
 	if product == "" {
 		product = "app"
@@ -56,30 +68,16 @@ func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (acce
 	if opts.Scope != "" {
 		form.Set("scope", opts.Scope)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, opts.CodeURL, strings.NewReader(form.Encode()))
-	if err != nil {
-		return "", "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 300 {
-		return "", "", fmt.Errorf("device code request: %s: %s", resp.Status, strings.TrimSpace(string(body)))
-	}
 	var dc DeviceCode
-	if err := json.Unmarshal(body, &dc); err != nil {
-		return "", "", err
+	if err := postFormJSON(ctx, client, opts.CodeURL, form, &dc); err != nil {
+		return "", "", fmt.Errorf("requesting device code: %w", err)
 	}
 	uri := dc.VerificationURIComplete
 	if uri == "" {
 		uri = dc.VerificationURI
 	}
-	fmt.Fprintf(w, "\nAuthorize %s — enter code %s at:\n\n  %s\n\nWaiting…\n", product, dc.UserCode, uri)
+	fmt.Fprintf(w, "\nTo authorize %s, open %s\nand enter the code: %s\n\nWaiting for authorization…\n",
+		product, uri, dc.UserCode)
 	_ = open(uri)
 
 	interval := time.Duration(dc.Interval) * time.Second
@@ -89,67 +87,65 @@ func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (acce
 	if opts.PollInterval > 0 {
 		interval = opts.PollInterval
 	}
-	deadline := time.Now().Add(time.Duration(dc.ExpiresIn) * time.Second)
-	if dc.ExpiresIn <= 0 {
-		deadline = time.Now().Add(15 * time.Minute)
+	maxPolls := 12
+	if dc.ExpiresIn > 0 {
+		maxPolls = dc.ExpiresIn/int(interval/time.Second) + 1
 	}
 
-	for {
+	poll := url.Values{
+		"client_id":   {opts.ClientID},
+		"device_code": {dc.DeviceCode},
+		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+	}
+	for i := 0; i < maxPolls; i++ {
 		if err := ctx.Err(); err != nil {
 			return "", "", err
 		}
-		if time.Now().After(deadline) {
-			return "", "", errors.New("device flow timed out")
+		sleep(interval)
+
+		var tr struct {
+			AccessToken      string `json:"access_token"`
+			Scope            string `json:"scope"`
+			Error            string `json:"error"`
+			ErrorDescription string `json:"error_description"`
 		}
-		tok, sc, pending, err := pollDeviceToken(ctx, client, opts.TokenURL, opts.ClientID, dc.DeviceCode)
-		if err != nil {
-			return "", "", err
+		if err := postFormJSON(ctx, client, opts.TokenURL, poll, &tr); err != nil {
+			return "", "", fmt.Errorf("polling for token: %w", err)
 		}
-		if pending {
-			select {
-			case <-ctx.Done():
-				return "", "", ctx.Err()
-			case <-time.After(interval):
-				continue
+		switch tr.Error {
+		case "":
+			if tr.AccessToken != "" {
+				return tr.AccessToken, tr.Scope, nil
 			}
+		case "authorization_pending":
+		case "slow_down":
+			interval += 5 * time.Second
+		case "expired_token":
+			return "", "", ErrDeviceExpired
+		case "access_denied":
+			return "", "", ErrDeviceDenied
+		default:
+			return "", "", fmt.Errorf("device flow failed: %s (%s)", tr.Error, tr.ErrorDescription)
 		}
-		return tok, sc, nil
 	}
+	return "", "", errors.New("timed out waiting for authorization")
 }
 
-func pollDeviceToken(ctx context.Context, client *http.Client, tokenURL, clientID, deviceCode string) (token, scope string, pending bool, err error) {
-	form := url.Values{
-		"client_id":   {clientID},
-		"device_code": {deviceCode},
-		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+func postFormJSON(ctx context.Context, client *http.Client, endpoint string, form url.Values, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", "", false, err
+		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", false, err
+		return err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	var payload struct {
-		AccessToken string `json:"access_token"`
-		Scope       string `json:"scope"`
-		Error       string `json:"error"`
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
-	_ = json.Unmarshal(body, &payload)
-	switch payload.Error {
-	case "", "null":
-		if payload.AccessToken == "" {
-			return "", "", true, nil
-		}
-		return payload.AccessToken, payload.Scope, false, nil
-	case "authorization_pending", "slow_down":
-		return "", "", true, nil
-	default:
-		return "", "", false, fmt.Errorf("device token: %s", payload.Error)
-	}
+	return json.Unmarshal(body, out)
 }
