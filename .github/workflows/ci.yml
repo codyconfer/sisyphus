@@ -14,8 +14,13 @@ concurrency:
 
 jobs:
   check:
-    name: check
-    runs-on: ubuntu-latest
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Sketch: ubuntu gate + macos CGO. Windows deferred to local make matrix.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: "1"
     steps:
