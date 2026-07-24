@@ -108,14 +108,24 @@ _ = log.RollUp(parent) // roll child counts up into the parent
 ## Development
 
 ```sh
-go build ./...
-go vet ./...
-go test ./...
+make build          # go build ./...
+make check          # build + fmt-check + lint + govulncheck + test (CI gate is `make ci`)
+make test           # go test ./...
 ```
+
+Linters live in the nested `tools/` module (`go tool -modfile=tools/go.mod`) so
+they stay out of the consumer dependency graph.
 
 Tests run offline. The secret backends shell out to `bw`/`op` only when present;
 their availability probes are stubbable, and the keyring path is tested with
 go-keyring's mock.
+
+### Local multi-repo development (`go.work`)
+
+When editing sisyphus alongside munin/viewkit, use an **uncommitted** `go.work`
+in the consumer (typically munin) that `use`s the sibling checkouts. Do not
+commit `go.work` / `go.work.sum` (gitignored here) and do not add committed
+`replace` directives — CI and published consumers build against tagged pins.
 
 ## License
 

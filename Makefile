@@ -4,13 +4,16 @@
 build:
 	go build ./...
 
+# Tooling lives in ./tools (separate module) so consumers don't inherit linter deps.
+GO_TOOL = go tool -modfile=tools/go.mod
+
 # Format all Go source in place (gofmt + goimports via golangci-lint).
 fmt:
-	go tool golangci-lint fmt
+	$(GO_TOOL) golangci-lint fmt
 
 # Verify all Go source is formatted; fail (showing the diff) if not.
 fmt-check:
-	go tool golangci-lint fmt --diff
+	$(GO_TOOL) golangci-lint fmt --diff
 
 # go vet: the standard toolchain analyzers.
 vet:
@@ -18,11 +21,11 @@ vet:
 
 # golangci-lint: aggregate static analysis (govet, staticcheck, errcheck, ...).
 lint:
-	go tool golangci-lint run
+	$(GO_TOOL) golangci-lint run
 
 # govulncheck: report known vulnerabilities in dependencies and reachable code.
 govulncheck:
-	go tool govulncheck ./...
+	$(GO_TOOL) govulncheck ./...
 
 # Run the test suite.
 test:
