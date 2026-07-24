@@ -1,8 +1,8 @@
 package sisyphus
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"

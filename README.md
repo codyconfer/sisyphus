@@ -11,13 +11,12 @@ passes them in. It was extracted from [munin](https://github.com/codyconfer/muni
 but depends on nothing munin-specific.
 
 ```sh
-# private module: configure Go to fetch it directly (not via the public proxy)
-go env -w 'GOPRIVATE=github.com/codyconfer/*'
 go get github.com/codyconfer/sisyphus
 ```
 
-Building also needs git credentials with read access to the repo. DuckDB-backed
-packages require CGO (via `github.com/marcboeker/go-duckdb/v2`).
+The module is available through the standard Go module proxy and checksum
+database. DuckDB-backed packages require CGO (via
+`github.com/marcboeker/go-duckdb/v2`).
 
 ## Packages
 

@@ -145,3 +145,45 @@ func TestArchive(t *testing.T) {
 		t.Error("source should be moved, not copied")
 	}
 }
+
+func TestJoinUnderRejectsEscape(t *testing.T) {
+	home := t.TempDir()
+	for _, name := range []string{"", ".", "..", filepath.Join("..", "outside")} {
+		if _, err := JoinUnder(home, name); err == nil {
+			t.Errorf("JoinUnder(%q) should reject escape or empty path", name)
+		}
+	}
+	if _, err := JoinUnder(home, filepath.Join("queries", "q.yaml")); err != nil {
+		t.Fatalf("JoinUnder valid nested path: %v", err)
+	}
+}
+
+func TestRemoveAllRejectsDangerousPaths(t *testing.T) {
+	for _, path := range []string{"", string(filepath.Separator)} {
+		if err := RemoveAll(path); err == nil {
+			t.Errorf("RemoveAll(%q) should reject dangerous path", path)
+		}
+	}
+}
+
+func TestArchiveRejectsEscapeWithoutMovingFiles(t *testing.T) {
+	parent := t.TempDir()
+	home := filepath.Join(parent, "home")
+	if err := EnsureDir(home); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside.yaml")
+	if err := os.WriteFile(outside, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Archive(home, []string{filepath.Join("..", "outside.yaml")}); err == nil {
+		t.Fatal("Archive should reject a path outside home")
+	}
+	got, err := os.ReadFile(outside)
+	if err != nil {
+		t.Fatalf("outside file was moved or removed: %v", err)
+	}
+	if string(got) != "keep" {
+		t.Fatalf("outside file changed: %q", got)
+	}
+}

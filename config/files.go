@@ -178,25 +178,72 @@ func IsDir(path string) bool {
 	return err == nil && fi.IsDir()
 }
 
+// JoinUnder joins a non-empty relative path to base, rejecting paths that
+// would escape base.
+func JoinUnder(base, relative string) (string, error) {
+	if strings.TrimSpace(base) == "" {
+		return "", fmt.Errorf("empty base path")
+	}
+	if strings.TrimSpace(relative) == "" || filepath.IsAbs(relative) {
+		return "", fmt.Errorf("path %q must be non-empty and relative", relative)
+	}
+	clean := filepath.Clean(relative)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("path %q escapes base directory", relative)
+	}
+	return filepath.Join(base, clean), nil
+}
+
+// RemoveAll removes path after rejecting empty paths and filesystem roots.
+// Callers remain responsible for confirming that the non-root path is the
+// intended application directory.
 func RemoveAll(path string) error {
-	if err := os.RemoveAll(path); err != nil {
-		return fmt.Errorf("removing %s: %w", path, err)
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("refusing to remove empty path")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s: %w", path, err)
+	}
+	absolute = filepath.Clean(absolute)
+	root := filepath.Clean(filepath.VolumeName(absolute) + string(filepath.Separator))
+	if absolute == root {
+		return fmt.Errorf("refusing to remove filesystem root %s", absolute)
+	}
+	if err := os.RemoveAll(absolute); err != nil {
+		return fmt.Errorf("removing %s: %w", absolute, err)
 	}
 	return nil
 }
 
 func Archive(home string, entries []string) (dest string, moved []string, err error) {
+	cleaned := make([]string, 0, len(entries))
+	for _, name := range entries {
+		path, pathErr := JoinUnder(home, name)
+		if pathErr != nil {
+			return "", nil, fmt.Errorf("archiving %q: %w", name, pathErr)
+		}
+		relative, pathErr := filepath.Rel(home, path)
+		if pathErr != nil {
+			return "", nil, fmt.Errorf("archiving %q: %w", name, pathErr)
+		}
+		cleaned = append(cleaned, relative)
+	}
 	ts := time.Now().Format("20060102150405")
 	dest = filepath.Join(home, ".archive", ts)
 	if err = EnsureDir(dest); err != nil {
 		return dest, nil, err
 	}
-	for _, n := range entries {
-		src := filepath.Join(home, n)
+	for _, n := range cleaned {
+		src, _ := JoinUnder(home, n)
 		if !Exists(src) {
 			continue
 		}
-		if err = os.Rename(src, filepath.Join(dest, n)); err != nil {
+		target, _ := JoinUnder(dest, n)
+		if err = EnsureDir(filepath.Dir(target)); err != nil {
+			return dest, moved, err
+		}
+		if err = os.Rename(src, target); err != nil {
 			return dest, moved, fmt.Errorf("archiving %s: %w", n, err)
 		}
 		moved = append(moved, n)

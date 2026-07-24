@@ -51,7 +51,11 @@ func Install(spec InstallSpec) ([]string, error) {
 	for _, d := range append([]string{""}, spec.Dirs...) {
 		path := home
 		if d != "" {
-			path = filepath.Join(home, d)
+			var err error
+			path, err = config.JoinUnder(home, d)
+			if err != nil {
+				return nil, fmt.Errorf("install directory %q: %w", d, err)
+			}
 		}
 		if err := config.EnsureDir(path); err != nil {
 			return nil, err
@@ -60,7 +64,10 @@ func Install(spec InstallSpec) ([]string, error) {
 
 	var created []string
 	for _, f := range spec.Files {
-		path := filepath.Join(home, f.RelPath)
+		path, err := config.JoinUnder(home, f.RelPath)
+		if err != nil {
+			return created, fmt.Errorf("install file %q: %w", f.RelPath, err)
+		}
 		if !spec.Force && config.IsFile(path) {
 			continue
 		}
