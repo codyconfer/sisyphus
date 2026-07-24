@@ -8,7 +8,13 @@ import (
 	"os"
 )
 
-func Listen(name string) (net.Listener, error) {
+// DefaultPipePrefix is unused on Unix (name is the socket path) but kept so
+// callers can share one Listen/Dial signature across platforms.
+const DefaultPipePrefix = "sisyphus"
+
+// Listen opens a Unix domain socket at name. prefix is ignored on Unix.
+func Listen(prefix, name string) (net.Listener, error) {
+	_ = prefix
 	if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -23,11 +29,14 @@ func Listen(name string) (net.Listener, error) {
 	return ln, nil
 }
 
-func dialConn(_ context.Context, name string) (net.Conn, error) {
-	return net.Dial("unix", name)
+func dialConn(ctx context.Context, prefix, name string) (net.Conn, error) {
+	_ = prefix
+	var d net.Dialer
+	return d.DialContext(ctx, "unix", name)
 }
 
-func IsListening(name string) bool {
+func IsListening(prefix, name string) bool {
+	_ = prefix
 	conn, err := net.Dial("unix", name)
 	if err != nil {
 		return false

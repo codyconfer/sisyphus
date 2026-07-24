@@ -1,14 +1,14 @@
-package daemon
+package service
 
 import (
 	"context"
 	"runtime"
 	"time"
 
-	"github.com/kardianos/service"
+	kservice "github.com/kardianos/service"
 )
 
-type ServiceConfig struct {
+type Config struct {
 	Name        string
 	DisplayName string
 	Description string
@@ -22,7 +22,7 @@ type program struct {
 	done   chan error
 }
 
-func (p *program) Start(_ service.Service) error {
+func (p *program) Start(_ kservice.Service) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p.cancel = cancel
 	p.done = make(chan error, 1)
@@ -30,7 +30,7 @@ func (p *program) Start(_ service.Service) error {
 	return nil
 }
 
-func (p *program) Stop(_ service.Service) error {
+func (p *program) Stop(_ kservice.Service) error {
 	if p.cancel != nil {
 		p.cancel()
 	}
@@ -44,15 +44,15 @@ func (p *program) Stop(_ service.Service) error {
 }
 
 type Service struct {
-	svc service.Service
+	svc kservice.Service
 }
 
-func NewService(cfg ServiceConfig, run func(ctx context.Context) error) (*Service, error) {
-	opt := service.KeyValue{}
+func New(cfg Config, run func(ctx context.Context) error) (*Service, error) {
+	opt := kservice.KeyValue{}
 	if cfg.UserService && runtime.GOOS != "windows" {
 		opt["UserService"] = true
 	}
-	svc, err := service.New(&program{run: run}, &service.Config{
+	svc, err := kservice.New(&program{run: run}, &kservice.Config{
 		Name:        cfg.Name,
 		DisplayName: cfg.DisplayName,
 		Description: cfg.Description,
@@ -65,7 +65,7 @@ func NewService(cfg ServiceConfig, run func(ctx context.Context) error) (*Servic
 	return &Service{svc: svc}, nil
 }
 
-func Interactive() bool { return service.Interactive() }
+func Interactive() bool { return kservice.Interactive() }
 
 func (s *Service) Run() error       { return s.svc.Run() }
 func (s *Service) Install() error   { return s.svc.Install() }
@@ -78,9 +78,9 @@ func (s *Service) Platform() string { return s.svc.Platform() }
 func (s *Service) Status() (string, error) {
 	st, err := s.svc.Status()
 	switch st {
-	case service.StatusRunning:
+	case kservice.StatusRunning:
 		return "running", err
-	case service.StatusStopped:
+	case kservice.StatusStopped:
 		return "stopped", err
 	default:
 		return "unknown", err

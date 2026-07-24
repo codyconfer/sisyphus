@@ -2,6 +2,7 @@ package secret
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,18 +14,18 @@ type opStore struct{}
 
 func (opStore) Name() string { return "1password" }
 
-func opConfigured() bool {
+func opConfigured(ctx context.Context) bool {
 	if _, err := exec.LookPath("op"); err != nil {
 		return false
 	}
 	if os.Getenv("OP_SERVICE_ACCOUNT_TOKEN") != "" {
 		return true
 	}
-	return exec.Command("op", "whoami").Run() == nil
+	return exec.CommandContext(ctx, "op", "whoami").Run() == nil
 }
 
-func (opStore) Get(key string) (string, bool, error) {
-	cmd := exec.Command("op", "item", "get", key, "--fields", "password", "--reveal")
+func (opStore) Get(ctx context.Context, key string) (string, bool, error) {
+	cmd := exec.CommandContext(ctx, "op", "item", "get", key, "--fields", "password", "--reveal")
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -44,12 +45,12 @@ func opNotFound(stderr string) bool {
 		strings.Contains(s, "doesn't exist")
 }
 
-func (opStore) Set(key, value string) error {
+func (opStore) Set(ctx context.Context, key, value string) error {
 	tmpl, err := opTemplate(key, value)
 	if err != nil {
 		return err
 	}
-	_, err = pipe("op", opCreateArgs(), tmpl)
+	_, err = pipe(ctx, "op", opCreateArgs(), tmpl)
 	return err
 }
 

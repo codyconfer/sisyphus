@@ -72,7 +72,7 @@ func TestPersistentDeduperEvictsFromStore(t *testing.T) {
 	kv := newMemKV()
 	d := &Deduper[string]{key: func(s string) string { return s }, keys: map[string]bool{}, max: 2, kv: kv, ns: "seen"}
 	d.Fresh([]string{"a", "b", "c", "d"})
-	stored, _ := kv.List("seen")
+	stored, _ := kv.List(context.Background(), "seen")
 	if len(stored) != 2 {
 		t.Fatalf("persistent seen set should be bounded to 2, got %d", len(stored))
 	}

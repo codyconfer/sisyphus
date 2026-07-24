@@ -1,6 +1,7 @@
 package sisyphus
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,7 +20,7 @@ func TestBackupRestoreThroughKeyring(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	sealed, storeName, err := Backup(BackupSpec{
+	sealed, storeName, err := Backup(context.Background(), BackupSpec{
 		Files:         []string{filepath.Join(src, "config.duckdb"), filepath.Join(src, "tokens.duckdb")},
 		SecretBackend: "keyring",
 		SecretService: "testapp",
@@ -33,7 +34,7 @@ func TestBackupRestoreThroughKeyring(t *testing.T) {
 	}
 
 	dst := t.TempDir()
-	names, _, err := Restore(RestoreSpec{
+	names, _, err := Restore(context.Background(), RestoreSpec{
 		Sealed:        sealed,
 		SecretBackend: "keyring",
 		SecretService: "testapp",
@@ -53,7 +54,7 @@ func TestBackupRestoreThroughKeyring(t *testing.T) {
 
 func TestRestoreMissingKeyFails(t *testing.T) {
 	keyring.MockInit()
-	_, _, err := Restore(RestoreSpec{
+	_, _, err := Restore(context.Background(), RestoreSpec{
 		Sealed:        []byte("whatever"),
 		SecretBackend: "keyring",
 		SecretService: "testapp",

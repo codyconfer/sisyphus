@@ -119,7 +119,7 @@ func (d *Deduper[T]) Fresh(items []T) []T {
 		d.keys[k] = true
 		d.order = append(d.order, k)
 		if d.kv != nil {
-			_ = d.kv.Set(d.ns, k, "1")
+			_ = d.kv.Put(context.Background(), d.ns, k, "1", time.Time{})
 		}
 		if !d.first {
 			out = append(out, it)
@@ -139,7 +139,7 @@ func (d *Deduper[T]) evict() {
 		d.order = d.order[1:]
 		delete(d.keys, oldest)
 		if d.kv != nil {
-			_ = d.kv.Delete(d.ns, oldest)
+			_ = d.kv.Delete(context.Background(), d.ns, oldest)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package sisyphus
 
 import (
+	"context"
 	"path/filepath"
 
 	"github.com/codyconfer/sisyphus/configdb"
@@ -27,7 +28,7 @@ type Manager struct {
 	cfgdb *configdb.Store
 }
 
-func Open(home string, opts Options) (*Manager, error) {
+func Open(ctx context.Context, home string, opts Options) (*Manager, error) {
 	m := &Manager{home: home, mode: opts.Mode}
 	if opts.Mode == ModeFileStore {
 		return m, nil
@@ -36,7 +37,7 @@ func Open(home string, opts Options) (*Manager, error) {
 	if name == "" {
 		name = defaultConfigDBName
 	}
-	cdb, err := configdb.Open(filepath.Join(home, name))
+	cdb, err := configdb.Open(ctx, filepath.Join(home, name))
 	if err != nil {
 		return nil, err
 	}
@@ -50,16 +51,16 @@ func (m *Manager) Home() string { return m.home }
 
 func (m *Manager) DB() *configdb.Store { return m.cfgdb }
 
-func (m *Manager) Current(name string) (Version, bool, error) {
-	return m.cfgdb.Current(name)
+func (m *Manager) Current(ctx context.Context, name string) (Version, bool, error) {
+	return m.cfgdb.Current(ctx, name)
 }
 
-func (m *Manager) Import(name string, content []byte, format string) error {
-	return m.cfgdb.Import(name, content, format)
+func (m *Manager) Import(ctx context.Context, name string, content []byte, format string) error {
+	return m.cfgdb.Import(ctx, name, content, format)
 }
 
-func (m *Manager) History(name string, limit int) ([]Version, error) {
-	return m.cfgdb.History(name, limit)
+func (m *Manager) History(ctx context.Context, name string, limit int) ([]Version, error) {
+	return m.cfgdb.History(ctx, name, limit)
 }
 
 func (m *Manager) Close() error {
@@ -91,11 +92,11 @@ type Resolver interface {
 	Resolve(Reconciliation) (Action, error)
 }
 
-func (m *Manager) Reconcile(name string, fileContent []byte, format string, hasFile bool, r Resolver) (content []byte, effFormat string, err error) {
+func (m *Manager) Reconcile(ctx context.Context, name string, fileContent []byte, format string, hasFile bool, r Resolver) (content []byte, effFormat string, err error) {
 	if m.mode == ModeFileStore {
 		return fileContent, format, nil
 	}
-	cur, hasCur, err := m.cfgdb.Current(name)
+	cur, hasCur, err := m.cfgdb.Current(ctx, name)
 	if err != nil {
 		return nil, "", err
 	}
@@ -115,7 +116,7 @@ func (m *Manager) Reconcile(name string, fileContent []byte, format string, hasF
 	}
 	switch act {
 	case ActionImport:
-		if err := m.cfgdb.Import(name, fileContent, format); err != nil {
+		if err := m.cfgdb.Import(ctx, name, fileContent, format); err != nil {
 			return nil, "", err
 		}
 		return fileContent, format, nil

@@ -1,16 +1,18 @@
-package daemon
+package ui
 
 import (
 	"os"
 	"sync"
 
 	"github.com/gen2brain/beeep"
+
+	"github.com/codyconfer/sisyphus/daemon"
 )
 
 type Notification struct {
 	Title   string
 	Message string
-	Icon    Asset
+	Icon    daemon.Asset
 }
 
 func Notify(n Notification) error {
@@ -22,7 +24,7 @@ var (
 	iconPaths = map[string]string{}
 )
 
-func iconPath(a Asset) string {
+func iconPath(a daemon.Asset) string {
 	if len(a.Bytes) == 0 {
 		return ""
 	}

@@ -1,13 +1,14 @@
 package configdb
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
 
 func openTemp(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "store.duckdb"))
+	s, err := Open(context.Background(), filepath.Join(t.TempDir(), "store.duckdb"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -17,7 +18,7 @@ func openTemp(t *testing.T) *Store {
 
 func TestCurrentMissOnFreshStore(t *testing.T) {
 	s := openTemp(t)
-	v, ok, err := s.Current("config")
+	v, ok, err := s.Current(context.Background(), "config")
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
@@ -30,11 +31,11 @@ func TestImportThenCurrent(t *testing.T) {
 	s := openTemp(t)
 
 	content := []byte("output: terminal\n")
-	if err := s.Import("config", content, "yaml"); err != nil {
+	if err := s.Import(context.Background(), "config", content, "yaml"); err != nil {
 		t.Fatalf("Import: %v", err)
 	}
 
-	cur, ok, err := s.Current("config")
+	cur, ok, err := s.Current(context.Background(), "config")
 	if err != nil {
 		t.Fatalf("Current: %v", err)
 	}
@@ -54,7 +55,7 @@ func TestImportThenCurrent(t *testing.T) {
 		t.Errorf("name = %q, want config", cur.Name)
 	}
 
-	hist, err := s.History("config", 10)
+	hist, err := s.History(context.Background(), "config", 10)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -68,14 +69,14 @@ func TestReImportArchivesPrior(t *testing.T) {
 
 	v1 := []byte("output: terminal\n")
 	v2 := []byte("output: json\n")
-	if err := s.Import("config", v1, "yaml"); err != nil {
+	if err := s.Import(context.Background(), "config", v1, "yaml"); err != nil {
 		t.Fatalf("Import v1: %v", err)
 	}
-	if err := s.Import("config", v2, "yaml"); err != nil {
+	if err := s.Import(context.Background(), "config", v2, "yaml"); err != nil {
 		t.Fatalf("Import v2: %v", err)
 	}
 
-	cur, ok, err := s.Current("config")
+	cur, ok, err := s.Current(context.Background(), "config")
 	if err != nil || !ok {
 		t.Fatalf("Current: ok=%v err=%v", ok, err)
 	}
@@ -83,7 +84,7 @@ func TestReImportArchivesPrior(t *testing.T) {
 		t.Errorf("current content = %q, want %q", cur.Content, v2)
 	}
 
-	hist, err := s.History("config", 10)
+	hist, err := s.History(context.Background(), "config", 10)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -100,30 +101,30 @@ func TestNamesAreIndependent(t *testing.T) {
 
 	cfg := []byte("output: terminal\n")
 	qry := []byte("SELECT 1\n")
-	if err := s.Import("config", cfg, "yaml"); err != nil {
+	if err := s.Import(context.Background(), "config", cfg, "yaml"); err != nil {
 		t.Fatalf("Import config: %v", err)
 	}
-	if err := s.Import("queries", qry, "sql"); err != nil {
+	if err := s.Import(context.Background(), "queries", qry, "sql"); err != nil {
 		t.Fatalf("Import queries: %v", err)
 	}
 
-	c, ok, err := s.Current("config")
+	c, ok, err := s.Current(context.Background(), "config")
 	if err != nil || !ok || c.Content != string(cfg) || c.Format != "yaml" {
 		t.Fatalf("config current = %+v ok=%v err=%v", c, ok, err)
 	}
-	q, ok, err := s.Current("queries")
+	q, ok, err := s.Current(context.Background(), "queries")
 	if err != nil || !ok || q.Content != string(qry) || q.Format != "sql" {
 		t.Fatalf("queries current = %+v ok=%v err=%v", q, ok, err)
 	}
 
-	if err := s.Import("config", []byte("output: json\n"), "yaml"); err != nil {
+	if err := s.Import(context.Background(), "config", []byte("output: json\n"), "yaml"); err != nil {
 		t.Fatalf("re-import config: %v", err)
 	}
-	ch, _ := s.History("config", 10)
+	ch, _ := s.History(context.Background(), "config", 10)
 	if len(ch) != 1 {
 		t.Errorf("config history = %d, want 1", len(ch))
 	}
-	qh, _ := s.History("queries", 10)
+	qh, _ := s.History(context.Background(), "queries", 10)
 	if len(qh) != 0 {
 		t.Errorf("queries history = %d, want 0", len(qh))
 	}
@@ -138,12 +139,12 @@ func TestHistoryNewestFirst(t *testing.T) {
 		[]byte("v3\n"),
 	}
 	for _, v := range versions {
-		if err := s.Import("config", v, "yaml"); err != nil {
+		if err := s.Import(context.Background(), "config", v, "yaml"); err != nil {
 			t.Fatalf("Import %q: %v", v, err)
 		}
 	}
 
-	hist, err := s.History("config", 10)
+	hist, err := s.History(context.Background(), "config", 10)
 	if err != nil {
 		t.Fatalf("History: %v", err)
 	}
@@ -164,11 +165,11 @@ func TestHistoryNewestFirst(t *testing.T) {
 func TestNilStore(t *testing.T) {
 	var s *Store
 
-	v, ok, err := s.Current("config")
+	v, ok, err := s.Current(context.Background(), "config")
 	if ok || err != nil {
 		t.Errorf("nil Current = %+v ok=%v err=%v", v, ok, err)
 	}
-	if err := s.Import("config", []byte("x"), "yaml"); err == nil {
+	if err := s.Import(context.Background(), "config", []byte("x"), "yaml"); err == nil {
 		t.Error("nil Import should error")
 	}
 	if err := s.Close(); err != nil {

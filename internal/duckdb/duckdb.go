@@ -1,6 +1,7 @@
 package duckdb
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -9,7 +10,10 @@ import (
 	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
-func Open(path, schema string) (*sql.DB, error) {
+func Open(ctx context.Context, path, schema string) (*sql.DB, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	restore := secureUmask()
 	db, err := sql.Open("duckdb", path)
 	if err != nil {
@@ -17,10 +21,12 @@ func Open(path, schema string) (*sql.DB, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
-		restore()
-		db.Close()
-		return nil, err
+	if schema != "" {
+		if _, err := db.ExecContext(ctx, schema); err != nil {
+			restore()
+			db.Close()
+			return nil, err
+		}
 	}
 	restore()
 	if err := os.Chmod(path, 0o600); err != nil && !errors.Is(err, os.ErrNotExist) {

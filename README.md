@@ -30,6 +30,10 @@ packages require CGO (via `github.com/marcboeker/go-duckdb/v2`).
 | `sisyphus/journal` | Generic activity log in DuckDB: nested parent/child runs + records, each with a free-form string attribute map. |
 | `sisyphus/secret` | Key escrow via the Bitwarden (`bw`) or 1Password (`op`) CLI, or the OS keyring. |
 | `sisyphus/backup` | tar archive + AES-256-GCM encrypt/decrypt/restore. |
+| `sisyphus/store` | Ad-hoc DuckDB file queries (read-only at the app layer). |
+| `sisyphus/daemon` | Streaming core: poll/fan-in/dedupe, sockets (pipe-prefix param on Windows), cursors. |
+| `sisyphus/daemon/service` | OS service install/start/stop wrapper. |
+| `sisyphus/daemon/ui` | System tray + desktop notifications. |
 
 Each sub-package is usable on its own. A nil `*Store` is a valid no-op across the
 DuckDB packages, so "disabled" and "open failed" behave uniformly.

@@ -1,11 +1,15 @@
-package daemon
+package ui
 
-import "fyne.io/systray"
+import (
+	"fyne.io/systray"
+
+	"github.com/codyconfer/sisyphus/daemon"
+)
 
 type TrayConfig struct {
 	Title   string
 	Tooltip string
-	Icons   *StateIcons
+	Icons   *daemon.StateIcons
 	OnReady func()
 	OnQuit  func()
 }
@@ -23,7 +27,7 @@ func (t *Tray) onReady() {
 	if t.cfg.Title != "" {
 		systray.SetTitle(t.cfg.Title)
 	}
-	t.SetState(StateInactive)
+	t.SetState(daemon.StateInactive)
 	t.quit = systray.AddMenuItem("Quit", "Stop and exit")
 	go func() {
 		<-t.quit.ClickedCh
@@ -39,7 +43,7 @@ func (t *Tray) onReady() {
 
 func (t *Tray) onExit() {}
 
-func (t *Tray) SetState(s State) {
+func (t *Tray) SetState(s daemon.State) {
 	if t.cfg.Icons != nil {
 		if a, ok := t.cfg.Icons.Get(s); ok && len(a.Bytes) > 0 {
 			systray.SetIcon(a.Bytes)

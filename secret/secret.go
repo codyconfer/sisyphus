@@ -1,14 +1,15 @@
 package secret
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
 
 type Store interface {
 	Name() string
-	Get(key string) (value string, found bool, err error)
-	Set(key, value string) error
+	Get(ctx context.Context, key string) (value string, found bool, err error)
+	Set(ctx context.Context, key, value string) error
 }
 
 var (
@@ -16,15 +17,18 @@ var (
 	opAvailable = opConfigured
 )
 
-func Resolve(backend, service string) (Store, error) {
+func Resolve(ctx context.Context, backend, service string) (Store, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch backend {
 	case "bitwarden", "bw":
-		if bwAvailable() {
+		if bwAvailable(ctx) {
 			return bwStore{}, nil
 		}
 		return nil, errors.New("bitwarden CLI (bw) is not configured/unlocked; run `bw login` and set BW_SESSION")
 	case "1password", "op":
-		if opAvailable() {
+		if opAvailable(ctx) {
 			return opStore{}, nil
 		}
 		return nil, errors.New("1Password CLI (op) is not configured; run `op signin`")
@@ -32,9 +36,9 @@ func Resolve(backend, service string) (Store, error) {
 		return newKeyringStore(service), nil
 	case "", "auto":
 		switch {
-		case bwAvailable():
+		case bwAvailable(ctx):
 			return bwStore{}, nil
-		case opAvailable():
+		case opAvailable(ctx):
 			return opStore{}, nil
 		default:
 			return newKeyringStore(service), nil
@@ -44,8 +48,8 @@ func Resolve(backend, service string) (Store, error) {
 	}
 }
 
-func GetOrCreate(s Store, key string, gen func() (string, error)) (string, error) {
-	v, ok, err := s.Get(key)
+func GetOrCreate(ctx context.Context, s Store, key string, gen func() (string, error)) (string, error) {
+	v, ok, err := s.Get(ctx, key)
 	if err != nil {
 		return "", fmt.Errorf("%s: reading %q: %w", s.Name(), key, err)
 	}
@@ -56,7 +60,7 @@ func GetOrCreate(s Store, key string, gen func() (string, error)) (string, error
 	if err != nil {
 		return "", err
 	}
-	if err := s.Set(key, v); err != nil {
+	if err := s.Set(ctx, key, v); err != nil {
 		return "", fmt.Errorf("%s: storing %q: %w", s.Name(), key, err)
 	}
 	return v, nil

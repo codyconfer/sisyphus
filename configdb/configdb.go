@@ -1,6 +1,7 @@
 package configdb
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -30,6 +31,9 @@ CREATE TABLE IF NOT EXISTS store_history (
 );
 `
 
+// ErrUnavailable is returned when a method is called on a nil or closed store.
+var ErrUnavailable = errors.New("store unavailable")
+
 type Version struct {
 	Name    string
 	Hash    string
@@ -43,8 +47,8 @@ type Store struct {
 	db *sql.DB
 }
 
-func Open(path string) (*Store, error) {
-	db, err := duckdb.Open(path, schema)
+func Open(ctx context.Context, path string) (*Store, error) {
+	db, err := duckdb.Open(ctx, path, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -66,18 +70,21 @@ func Hash(format string, content []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func (s *Store) Current(name string) (Version, bool, error) {
+func (s *Store) Current(ctx context.Context, name string) (Version, bool, error) {
 	if s == nil || s.db == nil {
 		return Version{}, false, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return Version{}, false, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.currentLocked(name)
+	return s.currentLocked(ctx, name)
 }
 
-func (s *Store) currentLocked(name string) (Version, bool, error) {
+func (s *Store) currentLocked(ctx context.Context, name string) (Version, bool, error) {
 	v := Version{Name: name}
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(ctx,
 		`SELECT hash, format, content, applied_at FROM store_current WHERE name = ?`, name,
 	).Scan(&v.Hash, &v.Format, &v.Content, &v.At)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -89,34 +96,37 @@ func (s *Store) currentLocked(name string) (Version, bool, error) {
 	return v, true, nil
 }
 
-func (s *Store) Import(name string, content []byte, format string) error {
+func (s *Store) Import(ctx context.Context, name string, content []byte, format string) error {
 	if s == nil || s.db == nil {
-		return errors.New("store unavailable")
+		return ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cur, hasCur, err := s.currentLocked(name)
+	cur, hasCur, err := s.currentLocked(ctx, name)
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	if hasCur {
-		if _, err := tx.Exec(
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO store_history (name, hash, format, content, archived_at) VALUES (?, ?, ?, ?, ?)`,
 			cur.Name, cur.Hash, cur.Format, cur.Content, time.Now(),
 		); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM store_current WHERE name = ?`, name); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM store_current WHERE name = ?`, name); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO store_current (name, hash, format, content, applied_at) VALUES (?, ?, ?, ?, ?)`,
 		name, Hash(format, content), format, string(content), time.Now(),
 	); err != nil {
@@ -125,16 +135,19 @@ func (s *Store) Import(name string, content []byte, format string) error {
 	return tx.Commit()
 }
 
-func (s *Store) History(name string, limit int) ([]Version, error) {
+func (s *Store) History(ctx context.Context, name string, limit int) ([]Version, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if limit <= 0 {
 		limit = 50
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rows, err := s.db.Query(
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT hash, format, content, archived_at FROM store_history
 		 WHERE name = ? ORDER BY archived_at DESC LIMIT ?`, name, limit)
 	if err != nil {

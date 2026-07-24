@@ -1,6 +1,7 @@
 package duckdb
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,7 +9,7 @@ import (
 
 func TestOpenSetsPrivatePerms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "t.duckdb")
-	db, err := Open(path, "CREATE TABLE t (id INTEGER)")
+	db, err := Open(context.Background(), path, "CREATE TABLE t (id INTEGER)")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

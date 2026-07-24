@@ -5,78 +5,80 @@ import (
 	"maps"
 	"testing"
 	"time"
+
+	"github.com/codyconfer/sisyphus/kv"
 )
 
 type memKV struct {
-	data map[string]map[string]string
+	data map[string]map[string]kv.Entry
 }
 
-func newMemKV() *memKV { return &memKV{data: map[string]map[string]string{}} }
+func newMemKV() *memKV { return &memKV{data: map[string]map[string]kv.Entry{}} }
 
-func (m *memKV) Get(ns, key string) (string, bool, error) {
-	v, ok := m.data[ns][key]
-	return v, ok, nil
+func (m *memKV) Get(_ context.Context, ns, key string) (kv.Entry, bool, error) {
+	e, ok := m.data[ns][key]
+	return e, ok, nil
 }
 
-func (m *memKV) Set(ns, key, value string) error {
+func (m *memKV) Put(_ context.Context, ns, key, value string, expiry time.Time) error {
 	if m.data[ns] == nil {
-		m.data[ns] = map[string]string{}
+		m.data[ns] = map[string]kv.Entry{}
 	}
-	m.data[ns][key] = value
+	m.data[ns][key] = kv.Entry{Value: value, Expiry: expiry}
 	return nil
 }
 
-func (m *memKV) Delete(ns, key string) error {
+func (m *memKV) Delete(_ context.Context, ns, key string) error {
 	delete(m.data[ns], key)
 	return nil
 }
 
-func (m *memKV) List(ns string) (map[string]string, error) {
-	out := map[string]string{}
+func (m *memKV) List(_ context.Context, ns string) (map[string]kv.Entry, error) {
+	out := map[string]kv.Entry{}
 	maps.Copy(out, m.data[ns])
 	return out, nil
 }
 
 func TestCursorRoundTrip(t *testing.T) {
-	kv := newMemKV()
-	c := NewCursor(kv, "github", "last_modified")
-	if got := c.Load(); got != "" {
+	store := newMemKV()
+	c := NewCursor(store, "github", "last_modified")
+	if got := c.Load(context.Background()); got != "" {
 		t.Fatalf("empty cursor should load empty, got %q", got)
 	}
-	if err := c.Save("Wed, 22 Jul 2026"); err != nil {
+	if err := c.Save(context.Background(), "Wed, 22 Jul 2026"); err != nil {
 		t.Fatal(err)
 	}
-	if got := NewCursor(kv, "github", "last_modified").Load(); got != "Wed, 22 Jul 2026" {
+	if got := NewCursor(store, "github", "last_modified").Load(context.Background()); got != "Wed, 22 Jul 2026" {
 		t.Fatalf("cursor did not persist, got %q", got)
 	}
-	if err := c.Clear(); err != nil {
+	if err := c.Clear(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Load(); got != "" {
+	if got := c.Load(context.Background()); got != "" {
 		t.Fatalf("cleared cursor should load empty, got %q", got)
 	}
 }
 
 func TestNilCursorSafe(t *testing.T) {
 	var c *Cursor
-	if got := c.Load(); got != "" {
+	if got := c.Load(context.Background()); got != "" {
 		t.Fatalf("nil cursor Load should be empty, got %q", got)
 	}
-	if err := c.Save("x"); err != nil {
+	if err := c.Save(context.Background(), "x"); err != nil {
 		t.Fatalf("nil cursor Save should no-op, got %v", err)
 	}
 }
 
 func TestPersistentDeduperSurvivesRestart(t *testing.T) {
-	kv := newMemKV()
+	store := newMemKV()
 	id := func(s string) string { return s }
 
-	first := NewPersistentDeduper(id, kv, "seen")
+	first := NewPersistentDeduper(id, store, "seen")
 	if out := first.Fresh([]string{"a", "b"}); len(out) != 0 {
 		t.Fatalf("first run should baseline (emit nothing), got %v", out)
 	}
 
-	restarted := NewPersistentDeduper(id, kv, "seen")
+	restarted := NewPersistentDeduper(id, store, "seen")
 	out := restarted.Fresh([]string{"a", "b", "c"})
 	if len(out) != 1 || out[0] != "c" {
 		t.Fatalf("after restart only new items should emit, got %v", out)
