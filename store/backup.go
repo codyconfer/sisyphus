@@ -8,7 +8,7 @@ var (
 )
 
 // RegisterBackupPath records a plugin DB path for inclusion in encrypted
-// backups (ADR-11). Apps should union these with core paths when calling Backup.
+// backups. Apps should union these with core paths when calling Backup.
 func RegisterBackupPath(path string) {
 	if path == "" {
 		return

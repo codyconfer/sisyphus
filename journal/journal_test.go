@@ -92,20 +92,23 @@ func TestNilStore(t *testing.T) {
 	if id, err := s.Add(context.Background(), Run{}, nil); id != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Add = %d, %v", id, err)
 	}
-	if err := s.RollUp(context.Background(), 1); err != nil {
-		t.Errorf("nil RollUp = %v", err)
+	if err := s.RollUp(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil RollUp = %v, want ErrUnavailable", err)
 	}
-	if runs, err := s.Recent(context.Background(), 5); err != nil || runs != nil {
-		t.Errorf("nil Recent = %v %v", runs, err)
+	if err := s.RollUp(context.Background(), 0); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil RollUp(0) = %v, want ErrUnavailable", err)
 	}
-	if runs, err := s.Children(context.Background(), 1); err != nil || runs != nil {
-		t.Errorf("nil Children = %v %v", runs, err)
+	if runs, err := s.Recent(context.Background(), 5); runs != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Recent = %v %v, want ErrUnavailable", runs, err)
 	}
-	if run, ok, err := s.Get(context.Background(), 1); err != nil || ok || run.ID != 0 {
-		t.Errorf("nil Get = %+v %v %v", run, ok, err)
+	if runs, err := s.Children(context.Background(), 1); runs != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Children = %v %v, want ErrUnavailable", runs, err)
 	}
-	if recs, err := s.Records(context.Background(), 1); err != nil || recs != nil {
-		t.Errorf("nil Records = %v %v", recs, err)
+	if run, ok, err := s.Get(context.Background(), 1); ok || run.ID != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Get = %+v %v %v, want ErrUnavailable", run, ok, err)
+	}
+	if recs, err := s.Records(context.Background(), 1); recs != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Records = %v %v, want ErrUnavailable", recs, err)
 	}
 	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Query = %v, want ErrUnavailable", err)
@@ -123,8 +126,33 @@ func TestClosedStoreUnavailable(t *testing.T) {
 	if _, err := s.Begin(context.Background(), "k", "n", nil); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Begin = %v, want ErrUnavailable", err)
 	}
+	if _, err := s.Add(context.Background(), Run{}, nil); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Add = %v, want ErrUnavailable", err)
+	}
+	if err := s.RollUp(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed RollUp = %v, want ErrUnavailable", err)
+	}
+	if runs, err := s.Recent(context.Background(), 5); runs != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Recent = %v %v, want ErrUnavailable", runs, err)
+	}
+	if runs, err := s.Children(context.Background(), 1); runs != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Children = %v %v, want ErrUnavailable", runs, err)
+	}
+	if _, ok, err := s.Get(context.Background(), 1); ok || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Get = ok %v err %v, want ErrUnavailable", ok, err)
+	}
+	if recs, err := s.Records(context.Background(), 1); recs != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Records = %v %v, want ErrUnavailable", recs, err)
+	}
 	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Query = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestRollUpZeroIDNoop(t *testing.T) {
+	s := openTemp(t)
+	if err := s.RollUp(context.Background(), 0); err != nil {
+		t.Errorf("RollUp(0) = %v, want nil", err)
 	}
 }
 

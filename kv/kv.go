@@ -59,7 +59,7 @@ func (s *Store) Close() error {
 
 func (s *Store) Get(ctx context.Context, namespace, key string) (Entry, bool, error) {
 	if s == nil || s.db == nil {
-		return Entry{}, false, nil
+		return Entry{}, false, ErrUnavailable
 	}
 	if err := ctx.Err(); err != nil {
 		return Entry{}, false, err
@@ -128,7 +128,7 @@ func (s *Store) Delete(ctx context.Context, namespace, key string) error {
 
 func (s *Store) List(ctx context.Context, namespace string) (map[string]Entry, error) {
 	if s == nil || s.db == nil {
-		return nil, nil
+		return nil, ErrUnavailable
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -160,7 +160,7 @@ func (s *Store) List(ctx context.Context, namespace string) (map[string]Entry, e
 // Sweep deletes all expired entries. Safe to call periodically; List also sweeps.
 func (s *Store) Sweep(ctx context.Context) (int64, error) {
 	if s == nil || s.db == nil {
-		return 0, nil
+		return 0, ErrUnavailable
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, err

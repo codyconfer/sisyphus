@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Watermark is a kv-backed last-run stamp for Scheduled catch-up (ADR-10).
+// Watermark is a kv-backed last-run stamp for Scheduled catch-up.
 type Watermark struct {
 	kv  KV
 	ns  string

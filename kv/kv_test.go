@@ -91,8 +91,8 @@ func TestTTLExpiryAndSweep(t *testing.T) {
 
 func TestNilStore(t *testing.T) {
 	var s *Store
-	if _, ok, err := s.Get(context.Background(), "n", "k"); ok || err != nil {
-		t.Errorf("nil Get = ok %v err %v", ok, err)
+	if _, ok, err := s.Get(context.Background(), "n", "k"); ok || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Get = ok %v err %v, want ErrUnavailable", ok, err)
 	}
 	if err := s.Put(context.Background(), "n", "k", "v", time.Time{}); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Put = %v, want ErrUnavailable", err)
@@ -100,8 +100,11 @@ func TestNilStore(t *testing.T) {
 	if err := s.Delete(context.Background(), "n", "k"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Delete = %v, want ErrUnavailable", err)
 	}
-	if list, err := s.List(context.Background(), "n"); err != nil || list != nil {
-		t.Errorf("nil List = %v %v", list, err)
+	if list, err := s.List(context.Background(), "n"); list != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil List = %v %v, want ErrUnavailable", list, err)
+	}
+	if n, err := s.Sweep(context.Background()); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Sweep = %d %v, want ErrUnavailable", n, err)
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
@@ -113,10 +116,19 @@ func TestClosedStoreUnavailable(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok, err := s.Get(context.Background(), "n", "k"); ok || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Get = ok %v err %v, want ErrUnavailable", ok, err)
+	}
 	if err := s.Put(context.Background(), "n", "k", "v", time.Time{}); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Put = %v, want ErrUnavailable", err)
 	}
 	if err := s.Delete(context.Background(), "n", "k"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Delete = %v, want ErrUnavailable", err)
+	}
+	if list, err := s.List(context.Background(), "n"); list != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed List = %v %v, want ErrUnavailable", list, err)
+	}
+	if n, err := s.Sweep(context.Background()); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Sweep = %d %v, want ErrUnavailable", n, err)
 	}
 }

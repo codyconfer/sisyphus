@@ -13,7 +13,7 @@ import (
 var ErrUnavailable = errors.New("store unavailable")
 
 // DB is a plugin-owned DuckDB file opened with an optional schema. Paths should
-// be included in the app backup set (N5 / ADR-11).
+// be included in the app backup set.
 type DB struct {
 	mu   sync.Mutex
 	db   *sql.DB

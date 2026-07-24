@@ -1,5 +1,4 @@
 .claude/
 /dist/
 *.duckdb
-go.work
-go.work.sum
+go.work*

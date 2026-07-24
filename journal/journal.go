@@ -108,7 +108,10 @@ func (s *Store) Begin(ctx context.Context, kind, name string, attrs map[string]s
 }
 
 func (s *Store) RollUp(ctx context.Context, id int64) error {
-	if s == nil || s.db == nil || id == 0 {
+	if s == nil || s.db == nil {
+		return ErrUnavailable
+	}
+	if id == 0 {
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -163,7 +166,7 @@ func (s *Store) Add(ctx context.Context, run Run, records []Record) (int64, erro
 
 func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
 	if s == nil || s.db == nil {
-		return nil, nil
+		return nil, ErrUnavailable
 	}
 	if limit <= 0 {
 		limit = 20
@@ -174,7 +177,7 @@ func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
 
 func (s *Store) Children(ctx context.Context, parentID int64) ([]Run, error) {
 	if s == nil || s.db == nil {
-		return nil, nil
+		return nil, ErrUnavailable
 	}
 	return s.queryRuns(ctx, `SELECT id, kind, name, started_at, finished_at, count, error, attrs
 		FROM runs WHERE parent_id = ? ORDER BY started_at`, parentID)
@@ -182,7 +185,7 @@ func (s *Store) Children(ctx context.Context, parentID int64) ([]Run, error) {
 
 func (s *Store) Get(ctx context.Context, id int64) (Run, bool, error) {
 	if s == nil || s.db == nil {
-		return Run{}, false, nil
+		return Run{}, false, ErrUnavailable
 	}
 	runs, err := s.queryRuns(ctx, `SELECT id, kind, name, started_at, finished_at, count, error, attrs
 		FROM runs WHERE id = ?`, id)
@@ -194,7 +197,7 @@ func (s *Store) Get(ctx context.Context, id int64) (Run, bool, error) {
 
 func (s *Store) Records(ctx context.Context, runID int64) ([]Record, error) {
 	if s == nil || s.db == nil {
-		return nil, nil
+		return nil, ErrUnavailable
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err

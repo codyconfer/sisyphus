@@ -13,7 +13,7 @@ type Due struct {
 }
 
 // ScheduleJob is a persistence-free scheduled unit. Callers own watermarks
-// (typically via kv) and implement Next/Run accordingly (ADR-10).
+// (typically via kv) and implement Next/Run accordingly.
 type ScheduleJob struct {
 	// Next reports when work is due. Ready means run immediately (catch-up).
 	Next func(ctx context.Context, now time.Time) (Due, error)
