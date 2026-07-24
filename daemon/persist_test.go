@@ -73,13 +73,14 @@ func TestPersistentDeduperSurvivesRestart(t *testing.T) {
 	store := newMemKV()
 	id := func(s string) string { return s }
 
-	first := NewPersistentDeduper(id, store, "seen")
-	if out := first.Fresh([]string{"a", "b"}); len(out) != 0 {
+	ctx := context.Background()
+	first := NewPersistentDeduper(ctx, id, store, "seen")
+	if out := first.Fresh(ctx, []string{"a", "b"}); len(out) != 0 {
 		t.Fatalf("first run should baseline (emit nothing), got %v", out)
 	}
 
-	restarted := NewPersistentDeduper(id, store, "seen")
-	out := restarted.Fresh([]string{"a", "b", "c"})
+	restarted := NewPersistentDeduper(ctx, id, store, "seen")
+	out := restarted.Fresh(ctx, []string{"a", "b", "c"})
 	if len(out) != 1 || out[0] != "c" {
 		t.Fatalf("after restart only new items should emit, got %v", out)
 	}

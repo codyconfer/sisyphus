@@ -2,6 +2,7 @@ package kv
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -93,16 +94,29 @@ func TestNilStore(t *testing.T) {
 	if _, ok, err := s.Get(context.Background(), "n", "k"); ok || err != nil {
 		t.Errorf("nil Get = ok %v err %v", ok, err)
 	}
-	if err := s.Put(context.Background(), "n", "k", "v", time.Time{}); err == nil {
-		t.Error("nil Put should error")
+	if err := s.Put(context.Background(), "n", "k", "v", time.Time{}); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Put = %v, want ErrUnavailable", err)
 	}
-	if err := s.Delete(context.Background(), "n", "k"); err == nil {
-		t.Error("nil Delete should error")
+	if err := s.Delete(context.Background(), "n", "k"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Delete = %v, want ErrUnavailable", err)
 	}
 	if list, err := s.List(context.Background(), "n"); err != nil || list != nil {
 		t.Errorf("nil List = %v %v", list, err)
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
+	}
+}
+
+func TestClosedStoreUnavailable(t *testing.T) {
+	s := openTemp(t)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(context.Background(), "n", "k", "v", time.Time{}); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Put = %v, want ErrUnavailable", err)
+	}
+	if err := s.Delete(context.Background(), "n", "k"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Delete = %v, want ErrUnavailable", err)
 	}
 }

@@ -2,6 +2,7 @@ package configdb
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -169,10 +170,20 @@ func TestNilStore(t *testing.T) {
 	if ok || err != nil {
 		t.Errorf("nil Current = %+v ok=%v err=%v", v, ok, err)
 	}
-	if err := s.Import(context.Background(), "config", []byte("x"), "yaml"); err == nil {
-		t.Error("nil Import should error")
+	if err := s.Import(context.Background(), "config", []byte("x"), "yaml"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Import = %v, want ErrUnavailable", err)
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
+	}
+}
+
+func TestClosedStoreUnavailable(t *testing.T) {
+	s := openTemp(t)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Import(context.Background(), "config", []byte("x"), "yaml"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Import = %v, want ErrUnavailable", err)
 	}
 }

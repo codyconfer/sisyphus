@@ -25,7 +25,7 @@ func Backup(ctx context.Context, spec BackupSpec) (sealed []byte, storeName stri
 	if err != nil {
 		return nil, "", err
 	}
-	archive, err := backup.Archive(spec.Files)
+	archive, err := backup.Archive(ctx, spec.Files)
 	if err != nil {
 		return nil, "", err
 	}
@@ -53,7 +53,7 @@ func Restore(ctx context.Context, spec RestoreSpec) (names []string, storeName s
 	if err != nil {
 		return nil, "", err
 	}
-	names, err = backup.Restore(spec.Sealed, key, spec.DestDir)
+	names, err = backup.Restore(ctx, spec.Sealed, key, spec.DestDir)
 	return names, store.Name(), err
 }
 

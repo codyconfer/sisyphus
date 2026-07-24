@@ -3,6 +3,7 @@ package backup
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -24,12 +25,18 @@ func NewKey() ([]byte, error) {
 	return k, nil
 }
 
-func Archive(paths []string) ([]byte, error) {
+func Archive(ctx context.Context, paths []string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
 	n := 0
 	seen := map[string]bool{}
 	for _, p := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		data, err := os.ReadFile(p)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -100,7 +107,10 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-func Restore(sealed, key []byte, destDir string) ([]string, error) {
+func Restore(ctx context.Context, sealed, key []byte, destDir string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	plain, err := Decrypt(sealed, key)
 	if err != nil {
 		return nil, fmt.Errorf("decrypting backup (wrong key?): %w", err)
@@ -114,6 +124,9 @@ func Restore(sealed, key []byte, destDir string) ([]string, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for name, data := range entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		base := filepath.Base(name)
 		if err := os.WriteFile(filepath.Join(destDir, base), data, 0o600); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", base, err)

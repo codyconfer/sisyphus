@@ -2,6 +2,7 @@ package backup
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -42,7 +43,7 @@ func TestArchiveRoundTrip(t *testing.T) {
 	os.WriteFile(a, []byte("AAA"), 0o600)
 	os.WriteFile(b, []byte("BBB"), 0o600)
 
-	arc, err := Archive([]string{a, b, filepath.Join(dir, "tokens.duckdb")})
+	arc, err := Archive(context.Background(), []string{a, b, filepath.Join(dir, "tokens.duckdb")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,8 +57,16 @@ func TestArchiveRoundTrip(t *testing.T) {
 }
 
 func TestArchiveEmptyErrors(t *testing.T) {
-	if _, err := Archive([]string{filepath.Join(t.TempDir(), "nope.duckdb")}); err == nil {
+	if _, err := Archive(context.Background(), []string{filepath.Join(t.TempDir(), "nope.duckdb")}); err == nil {
 		t.Fatal("expected error when no files exist")
+	}
+}
+
+func TestArchiveHonorsCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Archive(ctx, []string{filepath.Join(t.TempDir(), "x.duckdb")}); err == nil {
+		t.Fatal("expected canceled context error")
 	}
 }
 
@@ -67,7 +76,7 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	os.WriteFile(filepath.Join(src, "tokens.duckdb"), []byte("TOK"), 0o600)
 
 	key, _ := NewKey()
-	arc, err := Archive([]string{filepath.Join(src, "config.duckdb"), filepath.Join(src, "tokens.duckdb")})
+	arc, err := Archive(context.Background(), []string{filepath.Join(src, "config.duckdb"), filepath.Join(src, "tokens.duckdb")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +86,7 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	}
 
 	dst := t.TempDir()
-	names, err := Restore(sealed, key, dst)
+	names, err := Restore(context.Background(), sealed, key, dst)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,11 +105,24 @@ func TestRestoreWrongKeyFails(t *testing.T) {
 	src := t.TempDir()
 	os.WriteFile(filepath.Join(src, "a.duckdb"), []byte("x"), 0o600)
 	k1, _ := NewKey()
-	arc, _ := Archive([]string{filepath.Join(src, "a.duckdb")})
+	arc, _ := Archive(context.Background(), []string{filepath.Join(src, "a.duckdb")})
 	sealed, _ := Encrypt(arc, k1)
 	k2, _ := NewKey()
-	if _, err := Restore(sealed, k2, t.TempDir()); err == nil {
+	if _, err := Restore(context.Background(), sealed, k2, t.TempDir()); err == nil {
 		t.Fatal("restore with wrong key must fail")
+	}
+}
+
+func TestRestoreHonorsCancel(t *testing.T) {
+	src := t.TempDir()
+	os.WriteFile(filepath.Join(src, "a.duckdb"), []byte("x"), 0o600)
+	key, _ := NewKey()
+	arc, _ := Archive(context.Background(), []string{filepath.Join(src, "a.duckdb")})
+	sealed, _ := Encrypt(arc, key)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Restore(ctx, sealed, key, t.TempDir()); err == nil {
+		t.Fatal("expected canceled context error")
 	}
 }
 

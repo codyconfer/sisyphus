@@ -56,10 +56,17 @@ func Open(ctx context.Context, path string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
 		return nil
 	}
-	return s.db.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.db == nil {
+		return nil
+	}
+	err := s.db.Close()
+	s.db = nil
+	return err
 }
 
 func Hash(format string, content []byte) string {

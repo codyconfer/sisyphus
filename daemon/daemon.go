@@ -109,7 +109,7 @@ func NewDeduper[T any](key func(T) string) *Deduper[T] {
 	return &Deduper[T]{key: key, keys: map[string]bool{}, max: defaultSeenCap, first: true}
 }
 
-func (d *Deduper[T]) Fresh(items []T) []T {
+func (d *Deduper[T]) Fresh(ctx context.Context, items []T) []T {
 	var out []T
 	for _, it := range items {
 		k := d.key(it)
@@ -119,18 +119,18 @@ func (d *Deduper[T]) Fresh(items []T) []T {
 		d.keys[k] = true
 		d.order = append(d.order, k)
 		if d.kv != nil {
-			_ = d.kv.Put(context.Background(), d.ns, k, "1", time.Time{})
+			_ = d.kv.Put(ctx, d.ns, k, "1", time.Time{})
 		}
 		if !d.first {
 			out = append(out, it)
 		}
-		d.evict()
+		d.evict(ctx)
 	}
 	d.first = false
 	return out
 }
 
-func (d *Deduper[T]) evict() {
+func (d *Deduper[T]) evict(ctx context.Context) {
 	if d.max <= 0 {
 		return
 	}
@@ -139,7 +139,7 @@ func (d *Deduper[T]) evict() {
 		d.order = d.order[1:]
 		delete(d.keys, oldest)
 		if d.kv != nil {
-			_ = d.kv.Delete(context.Background(), d.ns, oldest)
+			_ = d.kv.Delete(ctx, d.ns, oldest)
 		}
 	}
 }

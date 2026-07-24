@@ -51,16 +51,16 @@ func (c *Cursor) Clear(ctx context.Context) error {
 	return c.kv.Delete(ctx, c.ns, c.key)
 }
 
-func NewPersistentDeduper[T any](key func(T) string, store KV, namespace string) *Deduper[T] {
+func NewPersistentDeduper[T any](ctx context.Context, key func(T) string, store KV, namespace string) *Deduper[T] {
 	d := &Deduper[T]{key: key, keys: map[string]bool{}, max: defaultSeenCap, first: true, kv: store, ns: namespace}
 	if store != nil {
-		if existing, err := store.List(context.Background(), namespace); err == nil && len(existing) > 0 {
+		if existing, err := store.List(ctx, namespace); err == nil && len(existing) > 0 {
 			for k := range existing {
 				d.keys[k] = true
 				d.order = append(d.order, k)
 			}
 			d.first = false
-			d.evict()
+			d.evict(ctx)
 		}
 	}
 	return d

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -85,10 +86,10 @@ func TestAddStandaloneWithError(t *testing.T) {
 
 func TestNilStore(t *testing.T) {
 	var s *Store
-	if id, err := s.Begin(context.Background(), "k", "n", nil); id != 0 || err == nil {
+	if id, err := s.Begin(context.Background(), "k", "n", nil); id != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Begin = %d, %v", id, err)
 	}
-	if id, err := s.Add(context.Background(), Run{}, nil); id != 0 || err == nil {
+	if id, err := s.Add(context.Background(), Run{}, nil); id != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Add = %d, %v", id, err)
 	}
 	if err := s.RollUp(context.Background(), 1); err != nil {
@@ -106,7 +107,41 @@ func TestNilStore(t *testing.T) {
 	if recs, err := s.Records(context.Background(), 1); err != nil || recs != nil {
 		t.Errorf("nil Records = %v %v", recs, err)
 	}
+	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Query = %v, want ErrUnavailable", err)
+	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
+	}
+}
+
+func TestClosedStoreUnavailable(t *testing.T) {
+	s := openTemp(t)
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Begin(context.Background(), "k", "n", nil); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Begin = %v, want ErrUnavailable", err)
+	}
+	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Query = %v, want ErrUnavailable", err)
+	}
+}
+
+func TestQuery(t *testing.T) {
+	s := openTemp(t)
+	id, err := s.Begin(context.Background(), "job", "q", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.Query(context.Background(), `SELECT kind, name FROM runs WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Columns) != 2 || len(res.Rows) != 1 {
+		t.Fatalf("Query = %+v", res)
+	}
+	if res.Rows[0][0] != "job" || res.Rows[0][1] != "q" {
+		t.Fatalf("row = %v", res.Rows[0])
 	}
 }
