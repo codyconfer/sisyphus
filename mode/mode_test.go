@@ -29,7 +29,7 @@ func TestGateCLIUnauthorizedSoft(t *testing.T) {
 		CLIUnauthorized: func(context.Context) error {
 			return errors.New("not ready")
 		},
-		EnforceHard: false,
+		BlockingErrors: false,
 	}
 	if err := Gate(context.Background(), ModeCLI, hooks); err != nil {
 		t.Fatalf("soft unauthorized should not fail: %v", err)
@@ -42,7 +42,7 @@ func TestGateCLIUnauthorizedHard(t *testing.T) {
 		CLIUnauthorized: func(context.Context) error {
 			return errors.New("not ready")
 		},
-		EnforceHard: true,
+		BlockingErrors: true,
 	}
 	if err := Gate(context.Background(), ModeCLI, hooks); err == nil {
 		t.Fatal("hard unauthorized should fail")

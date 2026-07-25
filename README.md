@@ -77,6 +77,54 @@ content, format, err := m.Reconcile(ctx, "config", raw, format, len(raw) > 0, my
 `ActionUseDB`). `Manager.Current/Import/History` cover the common config-DB
 operations; `DB()` exposes the underlying `*configdb.Store` for anything more.
 
+### Authorization gates
+
+The `mode` package runs authorization policy supplied by your application; it
+does not decide who is authorized. Your `GateHooks.Classify` callback maps the
+current account state to:
+
+- `AuthUnauthenticated` — no valid identity or login.
+- `AuthUnauthorized` — authenticated, but missing a required approval,
+  membership, scope, or onboarding step.
+- `AuthAuthorized` — fully allowed.
+
+`BlockingErrors` is not a global "require authentication" switch. It affects
+only an unauthorized CLI user: when `CLIUnauthorized` returns an error,
+`BlockingErrors: true` propagates that error and blocks the command;
+`BlockingErrors: false` discards it and allows the command to continue.
+
+| Mode and state | `Gate` behavior |
+|---|---|
+| CLI, unauthenticated | Runs `CLIUnauthenticated`; any error blocks. |
+| CLI, unauthorized, non-blocking errors | Runs `CLIUnauthorized`, discards its error, and continues. |
+| CLI, unauthorized, blocking errors | Runs `CLIUnauthorized`; any error blocks. |
+| CLI, authorized | Continues without calling an auth hook. |
+| Serve or daemon, not authorized | Runs the corresponding hook; return `nil` to warn and continue, or an error to block. |
+| Deck, any state | Always runs `DeckRequire` when that hook is provided. |
+
+```go
+err := mode.Gate(ctx, mode.ModeCLI, mode.GateHooks{
+    Classify: func(ctx context.Context) mode.AuthState {
+        return classifyMyAccount(ctx) // application-specific policy
+    },
+    CLIUnauthenticated: loginAndOnboard,
+    CLIUnauthorized: func(context.Context) error {
+        return errors.New("account is not approved")
+    },
+    BlockingErrors: true,
+})
+if err != nil {
+    return err // stop before running the command
+}
+```
+
+The gate allows execution when `Classify` is nil, when the applicable hook is
+nil, or when a blocking hook returns `nil`. Applications requiring strict
+authorization should supply every relevant hook, return explicit denial errors,
+and stop whenever `Gate` returns an error. OAuth flows in `auth` establish
+credentials; the application still decides whether those credentials are
+authorized.
+
 ### Encrypted, key-escrowed backups
 
 ```go

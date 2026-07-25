@@ -31,10 +31,10 @@ type GateHooks struct {
 	// CLIUnauthenticated runs guided auth for CLI mode (e.g. login + onboard).
 	CLIUnauthenticated func(ctx context.Context) error
 	// CLIUnauthorized is called when authenticated but not fully authorized.
-	// If EnforceHard is true and this returns an error, the gate fails.
+	// If BlockingErrors is true and this returns an error, the gate fails.
 	CLIUnauthorized func(ctx context.Context) error
-	// EnforceHard, when true, treats CLIUnauthorized errors as fatal.
-	EnforceHard bool
+	// BlockingErrors, when true, makes CLIUnauthorized errors block execution.
+	BlockingErrors bool
 
 	// ServeUnauthorized warns (non-fatal) when serve mode is not authorized.
 	ServeUnauthorized func(ctx context.Context) error
@@ -76,7 +76,7 @@ func Gate(ctx context.Context, m Mode, hooks GateHooks) error {
 		case AuthUnauthorized:
 			if hooks.CLIUnauthorized != nil {
 				err := hooks.CLIUnauthorized(ctx)
-				if hooks.EnforceHard {
+				if hooks.BlockingErrors {
 					return err
 				}
 				return nil
