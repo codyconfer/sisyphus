@@ -23,29 +23,29 @@ func TestGateCLI(t *testing.T) {
 	}
 }
 
-func TestGateCLIUnauthorizedSoft(t *testing.T) {
+func TestGateCLIUnauthorizedDefault(t *testing.T) {
 	hooks := GateHooks{
 		Classify: func(context.Context) AuthState { return AuthUnauthorized },
 		CLIUnauthorized: func(context.Context) error {
 			return errors.New("not ready")
 		},
-		BlockingErrors: false,
+		AllOrNothingAuth: false,
 	}
 	if err := Gate(context.Background(), ModeCLI, hooks); err != nil {
-		t.Fatalf("soft unauthorized should not fail: %v", err)
+		t.Fatalf("default unauthorized should not fail: %v", err)
 	}
 }
 
-func TestGateCLIUnauthorizedHard(t *testing.T) {
+func TestGateCLIUnauthorizedAllOrNothing(t *testing.T) {
 	hooks := GateHooks{
 		Classify: func(context.Context) AuthState { return AuthUnauthorized },
 		CLIUnauthorized: func(context.Context) error {
 			return errors.New("not ready")
 		},
-		BlockingErrors: true,
+		AllOrNothingAuth: true,
 	}
 	if err := Gate(context.Background(), ModeCLI, hooks); err == nil {
-		t.Fatal("hard unauthorized should fail")
+		t.Fatal("all-or-nothing auth should reject unauthorized cli")
 	}
 }
 

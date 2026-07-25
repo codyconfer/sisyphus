@@ -88,16 +88,16 @@ current account state to:
   membership, scope, or onboarding step.
 - `AuthAuthorized` — fully allowed.
 
-`BlockingErrors` is not a global "require authentication" switch. It affects
+`AllOrNothingAuth` is not a global "require authentication" switch. It affects
 only an unauthorized CLI user: when `CLIUnauthorized` returns an error,
-`BlockingErrors: true` propagates that error and blocks the command;
-`BlockingErrors: false` discards it and allows the command to continue.
+`AllOrNothingAuth: true` propagates that error and blocks the command;
+`AllOrNothingAuth: false` discards it and allows the command to continue.
 
 | Mode and state | `Gate` behavior |
 |---|---|
 | CLI, unauthenticated | Runs `CLIUnauthenticated`; any error blocks. |
-| CLI, unauthorized, non-blocking errors | Runs `CLIUnauthorized`, discards its error, and continues. |
-| CLI, unauthorized, blocking errors | Runs `CLIUnauthorized`; any error blocks. |
+| CLI, unauthorized, default policy | Runs `CLIUnauthorized`, discards its error, and continues. |
+| CLI, unauthorized, all-or-nothing auth | Runs `CLIUnauthorized`; any error blocks. |
 | CLI, authorized | Continues without calling an auth hook. |
 | Serve or daemon, not authorized | Runs the corresponding hook; return `nil` to warn and continue, or an error to block. |
 | Deck, any state | Always runs `DeckRequire` when that hook is provided. |
@@ -111,7 +111,7 @@ err := mode.Gate(ctx, mode.ModeCLI, mode.GateHooks{
     CLIUnauthorized: func(context.Context) error {
         return errors.New("account is not approved")
     },
-    BlockingErrors: true,
+    AllOrNothingAuth: true,
 })
 if err != nil {
     return err // stop before running the command
