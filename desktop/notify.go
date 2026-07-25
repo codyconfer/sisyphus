@@ -1,20 +1,32 @@
-package ui
+// Package desktop sends OS desktop notifications.
+//
+// It is intentionally untagged and independent of daemon/ui (tray) so callers
+// can notify without pulling in systray. Icon bytes are passed by value so this
+// package does not import sisyphus/daemon.
+package desktop
 
 import (
 	"os"
 	"sync"
 
 	"github.com/gen2brain/beeep"
-
-	"github.com/codyconfer/sisyphus/daemon"
 )
 
+// Icon is a named image payload for a notification.
+type Icon struct {
+	Name  string
+	MIME  string
+	Bytes []byte
+}
+
+// Notification is a desktop toast.
 type Notification struct {
 	Title   string
 	Message string
-	Icon    daemon.Asset
+	Icon    Icon
 }
 
+// Notify shows an OS desktop notification.
 func Notify(n Notification) error {
 	return beeep.Notify(n.Title, n.Message, iconPath(n.Icon))
 }
@@ -24,7 +36,7 @@ var (
 	iconPaths = map[string]string{}
 )
 
-func iconPath(a daemon.Asset) string {
+func iconPath(a Icon) string {
 	if len(a.Bytes) == 0 {
 		return ""
 	}
@@ -42,7 +54,7 @@ func iconPath(a daemon.Asset) string {
 	case "image/jpeg":
 		ext = ".jpg"
 	}
-	f, err := os.CreateTemp("", "sisyphus-asset-*"+ext)
+	f, err := os.CreateTemp("", "sisyphus-desktop-*"+ext)
 	if err != nil {
 		return ""
 	}

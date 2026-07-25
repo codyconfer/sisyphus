@@ -31,10 +31,11 @@ database. DuckDB-backed packages require CGO (via
 | `sisyphus/sealed` | Encrypted credential store (AES-GCM over `kv`; key in OS keyring). |
 | `sisyphus/auth` | OAuth loopback · device flow · `RunTool` CLI helper. |
 | `sisyphus/mode` | Operating modes + injectable auth gate hooks. |
-| `sisyphus/lifecycle` | Home-dir install / clean / nuke primitives. |
+| `sisyphus/lifecycle` | Home-dir install / clean / nuke primitives; shell hook runner (`Scripts` / `Select` / `Run`). |
+| `sisyphus/desktop` | OS desktop notifications (beeep). Untagged leaf — does not import `daemon`. |
 | `sisyphus/daemon` | Streaming core: poll/fan-in/dedupe, sockets (pipe-prefix param on Windows), cursors. |
-| `sisyphus/daemon/service` | OS service install/start/stop wrapper. |
-| `sisyphus/daemon/ui` | System tray + desktop notifications. |
+| `sisyphus/daemon/service` | OS service install/start/stop wrapper. Empty under [`nodaemon`](#daemon-free-builds-nodaemon). |
+| `sisyphus/daemon/ui` | System tray. Empty under [`nodaemon`](#daemon-free-builds-nodaemon). |
 
 Each sub-package is usable on its own. A nil `*Store` is a valid no-op across the
 DuckDB packages, so "disabled" and "open failed" behave uniformly.
@@ -100,6 +101,7 @@ only an unauthorized CLI user: when `CLIUnauthorized` returns an error,
 | CLI, unauthorized, all-or-nothing auth | Runs `CLIUnauthorized`; any error blocks. |
 | CLI, authorized | Continues without calling an auth hook. |
 | Serve or daemon, not authorized | Runs the corresponding hook; return `nil` to warn and continue, or an error to block. |
+| Serve or daemon, `nodaemon` build | Returns `ErrUnsupportedMode` without calling any hook. |
 | Deck, any state | Always runs `DeckRequire` when that hook is provided. |
 
 ```go
@@ -124,6 +126,43 @@ authorization should supply every relevant hook, return explicit denial errors,
 and stop whenever `Gate` returns an error. OAuth flows in `auth` establish
 credentials; the application still decides whether those credentials are
 authorized.
+
+### Daemon-free builds (`nodaemon`)
+
+The `nodaemon` build tag compiles out everything that presumes a long-running
+background service, so an application can ship a CLI-only binary from the same
+source tree:
+
+```sh
+go build -tags nodaemon ./...
+make test TAGS=nodaemon
+```
+
+| Symbol | Default build | `nodaemon` build |
+|---|---|---|
+| `mode.DaemonSupported` | `true` | `false` |
+| `mode.Supported(m)` | `true` for every mode | `false` for `ModeServe` / `ModeDaemon` |
+| `mode.Gate(ctx, m, hooks)` | Runs the hooks | Wraps `ErrUnsupportedMode` for serve/daemon |
+| `daemon.Attached(prefix, name)` | Probes the socket when `DaemonSupported` | Always `false` (gates on `mode.DaemonSupported`) |
+| `daemon/service`, `daemon/ui` | Full API | Empty packages |
+| `desktop` | Full API | Full API (untagged; import only when you want notifications) |
+
+`DaemonSupported` is a constant, so `if !mode.DaemonSupported { … }` is
+eliminated at compile time and the daemon half of your program can be dropped
+from the binary. `daemon.Attached` is the capability-aware form of
+`daemon.IsListening` — it returns false when `!mode.DaemonSupported`, otherwise
+delegates to `IsListening`. Gate optional UI and features on `Attached`, and use
+`IsListening` only when you want a raw probe regardless of build.
+`mode` is the sole build-tag value source for daemon capability; `Attached` is
+untagged and imports `mode`.
+
+Emptying `daemon/service` and `daemon/ui` under the tag keeps
+`kardianos/service` and `fyne.io/systray` out of the dependency graph; importing
+either package in a `nodaemon` build is a compile error at the first use.
+Desktop notifications live in `sisyphus/desktop` (untagged, beeep); omit that
+import in CLI-only binaries to keep beeep out. The rest of `sisyphus/daemon` —
+polling, fan-in, dedupe, cursors, schedules, watermarks, sockets — is untagged
+and stays available, because none of it requires a service to be running.
 
 ### Encrypted, key-escrowed backups
 
@@ -167,7 +206,10 @@ _ = log.RollUp(ctx, parent) // roll child counts up into the parent
 make build          # go build ./...
 make check          # build + fmt-check + lint + govulncheck + test (CI gate is `make ci`)
 make test           # go test ./...
+make check TAGS=nodaemon   # same gate for the daemon-free configuration
 ```
+
+`TAGS` threads extra build tags through `build`, `vet`, `lint`, and `test`.
 
 Linters live in the nested `tools/` module (`go tool -modfile=tools/go.mod`) so
 they stay out of the consumer dependency graph.

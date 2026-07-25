@@ -1,3 +1,5 @@
+//go:build !nodaemon
+
 package service
 
 import (

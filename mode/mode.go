@@ -1,6 +1,10 @@
 package mode
 
-import "context"
+import (
+	"context"
+	"errors"
+	"fmt"
+)
 
 // Mode names the operating surface of an application. Apps choose which modes
 // they expose; the gate framework is mode-agnostic.
@@ -12,6 +16,21 @@ const (
 	ModeDaemon Mode = "daemon"
 	ModeDeck   Mode = "deck"
 )
+
+// ErrUnsupportedMode is returned by Gate for a mode this build cannot run.
+var ErrUnsupportedMode = errors.New("mode: unsupported by this build")
+
+// Supported reports whether m can run in this build. ModeServe and ModeDaemon
+// need daemon support and are unavailable under the `nodaemon` build tag; every
+// other mode, including app-defined ones, is always supported.
+func Supported(m Mode) bool {
+	switch m {
+	case ModeServe, ModeDaemon:
+		return DaemonSupported
+	default:
+		return true
+	}
+}
 
 // AuthState is the coarse authorization classification used by Gate.
 type AuthState int
@@ -44,8 +63,13 @@ type GateHooks struct {
 	DeckRequire func(ctx context.Context) error
 }
 
-// Gate applies mode-specific authorization policy via hooks.
+// Gate applies mode-specific authorization policy via hooks. It fails closed
+// on a mode this build does not support, wrapping ErrUnsupportedMode, so a
+// daemon-free binary cannot be talked into running daemon-mode policy.
 func Gate(ctx context.Context, m Mode, hooks GateHooks) error {
+	if !Supported(m) {
+		return fmt.Errorf("%w: %s", ErrUnsupportedMode, m)
+	}
 	if hooks.Classify == nil {
 		return nil
 	}
