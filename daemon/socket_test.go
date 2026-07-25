@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -10,8 +11,22 @@ import (
 func encodeInt(v int) ([]byte, error) { return []byte(strconv.Itoa(v)), nil }
 func decodeInt(b []byte) (int, error) { return strconv.Atoi(string(b)) }
 
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "sisyphus-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove socket temp directory: %v", err)
+		}
+	})
+	return filepath.Join(dir, "s.sock")
+}
+
 func TestSocketBroadcastToMultipleClients(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.sock")
+	path := shortSocketPath(t)
 	ln, err := Listen("test", path)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +65,7 @@ func TestSocketBroadcastToMultipleClients(t *testing.T) {
 }
 
 func TestListenClearsStaleSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.sock")
+	path := shortSocketPath(t)
 	ln1, err := Listen("test", path)
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +80,7 @@ func TestListenClearsStaleSocket(t *testing.T) {
 }
 
 func TestIsListening(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "s.sock")
+	path := shortSocketPath(t)
 	if IsListening("test", path) {
 		t.Fatal("nothing should be listening yet")
 	}

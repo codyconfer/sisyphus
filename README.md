@@ -1,8 +1,6 @@
 # sisyphus
 
-> Sisyphus was condemned to roll a boulder uphill forever. This package bundles
-> the boulder-chores an application repeats forever: loading configuration,
-> persisting state, and making encrypted, key-escrowed backups.
+[![CI](https://github.com/codyconfer/sisyphus/actions/workflows/ci.yml/badge.svg)](https://github.com/codyconfer/sisyphus/actions/workflows/ci.yml)
 
 `sisyphus` is a small, **app-agnostic** Go toolkit for the plumbing every CLI or
 service ends up rewriting. It carries no application-specific types or names —
