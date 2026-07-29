@@ -142,6 +142,30 @@ func (s *Store) Import(ctx context.Context, name string, content []byte, format 
 	return tx.Commit()
 }
 
+func (s *Store) Forget(ctx context.Context, name string) error {
+	if s == nil || s.db == nil {
+		return ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM store_current WHERE name = ?`, name); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM store_history WHERE name = ?`, name); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) History(ctx context.Context, name string, limit int) ([]Version, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
