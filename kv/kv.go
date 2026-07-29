@@ -157,6 +157,59 @@ func (s *Store) List(ctx context.Context, namespace string) (map[string]Entry, e
 	return out, rows.Err()
 }
 
+// Namespaces lists the namespaces that currently hold entries, expired ones swept first.
+func (s *Store) Namespaces(ctx context.Context) ([]string, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.sweepLocked(ctx); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT namespace FROM kv ORDER BY namespace`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ns string
+		if err := rows.Scan(&ns); err != nil {
+			return nil, err
+		}
+		out = append(out, ns)
+	}
+	return out, rows.Err()
+}
+
+// Clear deletes every entry in a namespace, or the whole store when namespace is empty.
+func (s *Store) Clear(ctx context.Context, namespace string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var res sql.Result
+	var err error
+	if namespace == "" {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM kv`)
+	} else {
+		res, err = s.db.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ?`, namespace)
+	}
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // Sweep deletes all expired entries. Safe to call periodically; List also sweeps.
 func (s *Store) Sweep(ctx context.Context) (int64, error) {
 	if s == nil || s.db == nil {

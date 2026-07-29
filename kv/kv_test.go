@@ -89,6 +89,73 @@ func TestTTLExpiryAndSweep(t *testing.T) {
 	}
 }
 
+func TestNamespacesLists(t *testing.T) {
+	s := openTemp(t)
+	if ns, err := s.Namespaces(context.Background()); err != nil || len(ns) != 0 {
+		t.Fatalf("empty Namespaces = %v, %v", ns, err)
+	}
+	_ = s.Put(context.Background(), "b", "k1", "v", time.Time{})
+	_ = s.Put(context.Background(), "a", "k1", "v", time.Time{})
+	_ = s.Put(context.Background(), "a", "k2", "v", time.Time{})
+	ns, err := s.Namespaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ns) != 2 || ns[0] != "a" || ns[1] != "b" {
+		t.Fatalf("Namespaces = %v, want [a b]", ns)
+	}
+}
+
+func TestNamespacesSkipsExpired(t *testing.T) {
+	s := openTemp(t)
+	past := time.Now().Add(-time.Hour).Truncate(time.Second)
+	_ = s.Put(context.Background(), "gone", "k", "v", past)
+	_ = s.Put(context.Background(), "live", "k", "v", time.Time{})
+	ns, err := s.Namespaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ns) != 1 || ns[0] != "live" {
+		t.Fatalf("Namespaces = %v, want [live]", ns)
+	}
+}
+
+func TestClear(t *testing.T) {
+	s := openTemp(t)
+	_ = s.Put(context.Background(), "a", "k1", "v", time.Time{})
+	_ = s.Put(context.Background(), "a", "k2", "v", time.Time{})
+	_ = s.Put(context.Background(), "b", "k1", "v", time.Time{})
+
+	n, err := s.Clear(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("Clear(a) removed %d, want 2", n)
+	}
+	if list, _ := s.List(context.Background(), "a"); len(list) != 0 {
+		t.Fatalf("ns a should be empty, got %v", list)
+	}
+	if list, _ := s.List(context.Background(), "b"); len(list) != 1 {
+		t.Fatalf("ns b should survive, got %v", list)
+	}
+
+	if n, err := s.Clear(context.Background(), "nosuch"); err != nil || n != 0 {
+		t.Fatalf("Clear(nosuch) = %d, %v, want 0, nil", n, err)
+	}
+
+	n, err = s.Clear(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("Clear(all) removed %d, want 1", n)
+	}
+	if ns, _ := s.Namespaces(context.Background()); len(ns) != 0 {
+		t.Fatalf("store should be empty, got %v", ns)
+	}
+}
+
 func TestNilStore(t *testing.T) {
 	var s *Store
 	if _, ok, err := s.Get(context.Background(), "n", "k"); ok || !errors.Is(err, ErrUnavailable) {
@@ -105,6 +172,12 @@ func TestNilStore(t *testing.T) {
 	}
 	if n, err := s.Sweep(context.Background()); n != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Sweep = %d %v, want ErrUnavailable", n, err)
+	}
+	if ns, err := s.Namespaces(context.Background()); ns != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Namespaces = %v %v, want ErrUnavailable", ns, err)
+	}
+	if n, err := s.Clear(context.Background(), ""); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Clear = %d %v, want ErrUnavailable", n, err)
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
@@ -130,5 +203,11 @@ func TestClosedStoreUnavailable(t *testing.T) {
 	}
 	if n, err := s.Sweep(context.Background()); n != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Sweep = %d %v, want ErrUnavailable", n, err)
+	}
+	if ns, err := s.Namespaces(context.Background()); ns != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Namespaces = %v %v, want ErrUnavailable", ns, err)
+	}
+	if n, err := s.Clear(context.Background(), ""); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Clear = %d %v, want ErrUnavailable", n, err)
 	}
 }
