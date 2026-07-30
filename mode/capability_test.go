@@ -22,7 +22,6 @@ func TestSupportedTracksDaemonCapability(t *testing.T) {
 	}
 }
 
-// gateCallCounter builds hooks that record whether Gate reached them.
 func gateCallCounter(called *bool) GateHooks {
 	mark := func(context.Context) error {
 		*called = true

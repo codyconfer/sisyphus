@@ -16,6 +16,10 @@ import (
 // ErrUnavailable is returned when a method is called on a nil or closed store.
 var ErrUnavailable = errors.New("sealed store unavailable")
 
+// ErrUndecodable is returned when a stored value exists but cannot be decrypted
+// with the current key, so callers can tell a lost key from a missing entry.
+var ErrUndecodable = errors.New("sealed value cannot be decrypted with the current key")
+
 // Entry is an app-agnostic credential-shaped blob stored encrypted at rest.
 type Entry struct {
 	AccessToken  string    `json:"access_token,omitempty"`
@@ -27,15 +31,16 @@ type Entry struct {
 // Options configures Open. Key material comes from the OS keyring (via secret)
 // unless KeyProvider is set.
 type Options struct {
-	Namespace      string // default "sealed"
-	KeyringService string // default "sisyphus"
-	KeyName        string // default "sealed-key"
+	Namespace      string
+	KeyringService string
+	KeyName        string
 	KeyProvider    func(context.Context) ([]byte, error)
 }
 
 // Store is an encrypted key/value store backed by kv.Store. Values are AES-GCM
 // sealed; the encryption key is escrowed in the OS keyring (or KeyProvider).
 type Store struct {
+	mu          sync.RWMutex
 	kv          *kv.Store
 	ns          string
 	keyProvider func(context.Context) ([]byte, error)
@@ -87,13 +92,27 @@ func keyringKey(ctx context.Context, service, keyName string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(v)
 }
 
-func (s *Store) Close() error {
-	if s == nil || s.kv == nil {
+func (s *Store) handle() *kv.Store {
+	if s == nil {
 		return nil
 	}
-	err := s.kv.Close()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.kv
+}
+
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	k := s.kv
 	s.kv = nil
-	return err
+	s.mu.Unlock()
+	if k == nil {
+		return nil
+	}
+	return k.Close()
 }
 
 func (s *Store) encryptionKey(ctx context.Context) ([]byte, error) {
@@ -111,10 +130,11 @@ func (s *Store) encryptionKey(ctx context.Context) ([]byte, error) {
 }
 
 func (s *Store) Get(ctx context.Context, name string) (Entry, bool, error) {
-	if s == nil || s.kv == nil {
+	k := s.handle()
+	if k == nil {
 		return Entry{}, false, nil
 	}
-	e, ok, err := s.kv.Get(ctx, s.ns, name)
+	e, ok, err := k.Get(ctx, s.ns, name)
 	if err != nil || !ok {
 		return Entry{}, ok, err
 	}
@@ -130,15 +150,15 @@ func (s *Store) Get(ctx context.Context, name string) (Entry, bool, error) {
 			}
 		}
 	}
-	// Legacy plaintext JSON fallback (migration path).
 	if json.Unmarshal([]byte(e.Value), &out) == nil {
 		return out, true, nil
 	}
-	return Entry{}, false, nil
+	return Entry{}, false, ErrUndecodable
 }
 
 func (s *Store) Put(ctx context.Context, name string, e Entry) error {
-	if s == nil || s.kv == nil {
+	k := s.handle()
+	if k == nil {
 		return ErrUnavailable
 	}
 	key, err := s.encryptionKey(ctx)
@@ -154,12 +174,20 @@ func (s *Store) Put(ctx context.Context, name string, e Entry) error {
 		return err
 	}
 	v := base64.StdEncoding.EncodeToString(sealed)
-	return s.kv.Put(ctx, s.ns, name, v, e.Expiry)
+	return k.Put(ctx, s.ns, name, v, rowExpiry(e))
+}
+
+func rowExpiry(e Entry) time.Time {
+	if e.RefreshToken != "" {
+		return time.Time{}
+	}
+	return e.Expiry
 }
 
 func (s *Store) Delete(ctx context.Context, name string) error {
-	if s == nil || s.kv == nil {
+	k := s.handle()
+	if k == nil {
 		return ErrUnavailable
 	}
-	return s.kv.Delete(ctx, s.ns, name)
+	return k.Delete(ctx, s.ns, name)
 }

@@ -68,20 +68,20 @@ func LoopbackAuthCode(ctx context.Context, w io.Writer, service string, opts Loo
 	mux.HandleFunc("/callback", func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		q := r.URL.Query()
-		if e := q.Get("error"); e != "" {
-			fmt.Fprintf(rw, "Authorization failed: %s. You can close this window.", e)
-			resCh <- result{err: fmt.Errorf("authorization error: %s", e)}
-			return
-		}
 		if subtle.ConstantTimeCompare([]byte(q.Get("state")), []byte(state)) != 1 {
 			http.Error(rw, "state mismatch", http.StatusBadRequest)
 			resCh <- result{err: errors.New("state mismatch (possible CSRF); aborting")}
 			return
 		}
+		if e := q.Get("error"); e != "" {
+			fmt.Fprintf(rw, "Authorization failed: %s. You can close this window.", e)
+			resCh <- result{err: fmt.Errorf("authorization error: %s", e)}
+			return
+		}
 		fmt.Fprintf(rw, "%s is now authorized for %s. You can close this window and return to the terminal.", product, service)
 		resCh <- result{code: q.Get("code")}
 	})
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 

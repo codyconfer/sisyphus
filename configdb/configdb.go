@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
@@ -43,30 +42,22 @@ type Version struct {
 }
 
 type Store struct {
-	mu sync.Mutex
-	db *sql.DB
+	h *duckdb.Handle
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := duckdb.Open(ctx, path, schema)
-	if err != nil {
+	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{h: h}, nil
 }
 
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.db == nil {
-		return nil
-	}
-	err := s.db.Close()
-	s.db = nil
-	return err
+	return s.h.Close()
 }
 
 func Hash(format string, content []byte) string {
@@ -78,20 +69,25 @@ func Hash(format string, content []byte) string {
 }
 
 func (s *Store) Current(ctx context.Context, name string) (Version, bool, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return Version{}, false, nil
 	}
-	if err := ctx.Err(); err != nil {
+	var v Version
+	var found bool
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		var err error
+		v, found, err = currentOn(ctx, db, name)
+		return err
+	})
+	if err != nil {
 		return Version{}, false, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.currentLocked(ctx, name)
+	return v, found, nil
 }
 
-func (s *Store) currentLocked(ctx context.Context, name string) (Version, bool, error) {
+func currentOn(ctx context.Context, db *sql.DB, name string) (Version, bool, error) {
 	v := Version{Name: name}
-	err := s.db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		`SELECT hash, format, content, applied_at FROM store_current WHERE name = ?`, name,
 	).Scan(&v.Hash, &v.Format, &v.Content, &v.At)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -104,94 +100,97 @@ func (s *Store) currentLocked(ctx context.Context, name string) (Version, bool, 
 }
 
 func (s *Store) Import(ctx context.Context, name string, content []byte, format string) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cur, hasCur, err := s.currentLocked(ctx, name)
-	if err != nil {
-		return err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if hasCur {
+	hash := Hash(format, content)
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		cur, hasCur, err := currentOn(ctx, db, name)
+		if err != nil {
+			return err
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if hasCur {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO store_history (name, hash, format, content, archived_at) VALUES (?, ?, ?, ?, ?)`,
+				cur.Name, cur.Hash, cur.Format, cur.Content, time.Now(),
+			); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM store_current WHERE name = ?`, name); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO store_history (name, hash, format, content, archived_at) VALUES (?, ?, ?, ?, ?)`,
-			cur.Name, cur.Hash, cur.Format, cur.Content, time.Now(),
+			`INSERT INTO store_current (name, hash, format, content, applied_at) VALUES (?, ?, ?, ?, ?)`,
+			name, hash, format, string(content), time.Now(),
 		); err != nil {
 			return err
 		}
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM store_current WHERE name = ?`, name); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO store_current (name, hash, format, content, applied_at) VALUES (?, ?, ?, ?, ?)`,
-		name, Hash(format, content), format, string(content), time.Now(),
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *Store) Forget(ctx context.Context, name string) error {
-	if s == nil || s.db == nil {
-		return ErrUnavailable
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tx, err := s.db.BeginTx(ctx, nil)
+		return tx.Commit()
+	})
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM store_current WHERE name = ?`, name); err != nil {
+	return s.bump(name + ":" + hash)
+}
+
+func (s *Store) Forget(ctx context.Context, name string) error {
+	if s == nil || s.h == nil {
+		return ErrUnavailable
+	}
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM store_current WHERE name = ?`, name); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM store_history WHERE name = ?`, name); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
+	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM store_history WHERE name = ?`, name); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.bump("forget:" + name)
 }
 
 func (s *Store) History(ctx context.Context, name string, limit int) ([]Version, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return nil, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
 	}
 	if limit <= 0 {
 		limit = 50
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT hash, format, content, archived_at FROM store_history
-		 WHERE name = ? ORDER BY archived_at DESC LIMIT ?`, name, limit)
+	var out []Version
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		rows, err := db.QueryContext(ctx,
+			`SELECT hash, format, content, archived_at FROM store_history
+			 WHERE name = ? ORDER BY archived_at DESC LIMIT ?`, name, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out = nil
+		for rows.Next() {
+			v := Version{Name: name}
+			if err := rows.Scan(&v.Hash, &v.Format, &v.Content, &v.At); err != nil {
+				return err
+			}
+			out = append(out, v)
+		}
+		return rows.Err()
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Version
-	for rows.Next() {
-		v := Version{Name: name}
-		if err := rows.Scan(&v.Hash, &v.Format, &v.Content, &v.At); err != nil {
-			return nil, err
-		}
-		out = append(out, v)
-	}
-	return out, rows.Err()
+	return out, nil
 }

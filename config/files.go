@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -50,7 +51,7 @@ func WriteCollection(dir string, blob []byte) (names []string, err error) {
 			return nil, fmt.Errorf("invalid collection entry name %q", name)
 		}
 		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(files[name]), 0o600); err != nil {
+		if err := writeAtomic(path, []byte(files[name])); err != nil {
 			return nil, fmt.Errorf("writing %s: %w", path, err)
 		}
 	}
@@ -89,10 +90,51 @@ func WriteItem(dir, filename string, content []byte) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(dir, filename)
-	if err := os.WriteFile(path, content, 0o600); err != nil {
+	if err := writeAtomic(path, content); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil
+}
+
+func writeAtomic(path string, content []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer func() {
+		tmp.Close()
+		os.Remove(name)
+	}()
+	if err := tmp.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(name, path); err != nil {
+		return err
+	}
+	syncDir(filepath.Dir(path))
+	return nil
+}
+
+// syncDir flushes a directory entry so a completed rename survives a crash:
+// without it the file contents are durable but the name may still be the old one.
+// Directory fsync is not portable, so this is best effort by design.
+func syncDir(dir string) {
+	d, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	defer d.Close()
+	_ = d.Sync()
 }
 
 func ReadFileAt(path string) (raw []byte, format string, err error) {
@@ -216,6 +258,26 @@ func RemoveAll(path string) error {
 	return nil
 }
 
+// newArchiveDir claims a fresh directory under root, suffixing the second-
+// resolution stamp when it is already taken. Mkdir rather than MkdirAll is what
+// makes the claim exclusive, so two archives in the same second cannot merge.
+func newArchiveDir(root, stamp string) (string, error) {
+	for i := 1; i <= 100; i++ {
+		dest := filepath.Join(root, stamp)
+		if i > 1 {
+			dest = filepath.Join(root, stamp+"-"+strconv.Itoa(i))
+		}
+		err := os.Mkdir(dest, 0o700)
+		if err == nil {
+			return dest, nil
+		}
+		if !os.IsExist(err) {
+			return "", fmt.Errorf("creating %s: %w", dest, err)
+		}
+	}
+	return "", fmt.Errorf("too many archives under %s for %s", root, stamp)
+}
+
 func Archive(home string, entries []string) (dest string, moved []string, err error) {
 	cleaned := make([]string, 0, len(entries))
 	for _, name := range entries {
@@ -229,10 +291,13 @@ func Archive(home string, entries []string) (dest string, moved []string, err er
 		}
 		cleaned = append(cleaned, relative)
 	}
-	ts := time.Now().Format("20060102150405")
-	dest = filepath.Join(home, ".archive", ts)
-	if err = EnsureDir(dest); err != nil {
-		return dest, nil, err
+	root := filepath.Join(home, ".archive")
+	if err = EnsureDir(root); err != nil {
+		return "", nil, err
+	}
+	dest, err = newArchiveDir(root, time.Now().Format("20060102150405"))
+	if err != nil {
+		return "", nil, err
 	}
 	for _, n := range cleaned {
 		src, _ := JoinUnder(home, n)

@@ -150,6 +150,9 @@ func Extract(archive []byte) (map[string][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
 		name := filepath.Base(filepath.Clean(hdr.Name))
 		if name == "." || name == ".." || name == "" || name == string(filepath.Separator) {
 			continue

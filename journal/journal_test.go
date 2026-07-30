@@ -113,6 +113,9 @@ func TestNilStore(t *testing.T) {
 	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Query = %v, want ErrUnavailable", err)
 	}
+	if err := s.Delete(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Delete = %v, want ErrUnavailable", err)
+	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
 	}
@@ -147,12 +150,70 @@ func TestClosedStoreUnavailable(t *testing.T) {
 	if _, err := s.Query(context.Background(), "SELECT 1"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Query = %v, want ErrUnavailable", err)
 	}
+	if err := s.Delete(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Delete = %v, want ErrUnavailable", err)
+	}
 }
 
 func TestRollUpZeroIDNoop(t *testing.T) {
 	s := openTemp(t)
 	if err := s.RollUp(context.Background(), 0); err != nil {
 		t.Errorf("RollUp(0) = %v, want nil", err)
+	}
+}
+
+func TestDeleteRemovesRunChildrenAndRecords(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	parent, err := s.Begin(ctx, "job", "nightly", nil)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if _, err := s.Add(ctx, Run{ParentID: parent, Kind: "query", Name: "a", Started: now, Finished: now, Count: 1},
+		[]Record{{Ts: now, Attrs: map[string]string{"title": "x"}}}); err != nil {
+		t.Fatalf("Add child: %v", err)
+	}
+	keep, err := s.Add(ctx, Run{Kind: "action", Name: "keep", Started: now, Finished: now, Count: 1},
+		[]Record{{Ts: now, Attrs: map[string]string{"title": "survivor"}}})
+	if err != nil {
+		t.Fatalf("Add keep: %v", err)
+	}
+
+	if err := s.Delete(ctx, parent); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, ok, err := s.Get(ctx, parent); ok || err != nil {
+		t.Errorf("Get(deleted) = ok %v, err %v, want gone", ok, err)
+	}
+	if children, err := s.Children(ctx, parent); err != nil || len(children) != 0 {
+		t.Errorf("Children(deleted) = %v, %v, want none", children, err)
+	}
+	res, err := s.Query(ctx, `SELECT count(*) FROM records`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rows) != 1 || res.Rows[0][0] != "1" {
+		t.Errorf("records after delete = %v, want only the surviving run's", res.Rows)
+	}
+	if recs, err := s.Records(ctx, keep); err != nil || len(recs) != 1 {
+		t.Errorf("Records(keep) = %v, %v, want 1", recs, err)
+	}
+	if runs, err := s.Recent(ctx, 10); err != nil || len(runs) != 1 || runs[0].ID != keep {
+		t.Errorf("Recent = %v, %v, want only run %d", runs, err, keep)
+	}
+}
+
+func TestDeleteZeroIDNoopAndUnknownID(t *testing.T) {
+	s := openTemp(t)
+	ctx := context.Background()
+	if err := s.Delete(ctx, 0); err != nil {
+		t.Errorf("Delete(0) = %v, want nil", err)
+	}
+	if err := s.Delete(ctx, 4242); err != nil {
+		t.Errorf("Delete(unknown) = %v, want nil", err)
 	}
 }
 

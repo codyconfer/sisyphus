@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
@@ -61,46 +60,35 @@ type Result struct {
 }
 
 type Store struct {
-	mu sync.Mutex
-	db *sql.DB
+	h *duckdb.Handle
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := duckdb.Open(ctx, path, schema)
-	if err != nil {
+	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{h: h}, nil
 }
 
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.db == nil {
-		return nil
-	}
-	err := s.db.Close()
-	s.db = nil
-	return err
+	return s.h.Close()
 }
 
 func (s *Store) Begin(ctx context.Context, kind, name string, attrs map[string]string) (int64, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var id int64
-	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO runs (kind, name, started_at, attrs) VALUES (?, ?, ?, ?) RETURNING id`,
-		kind, name, time.Now(), marshalAttrs(attrs),
-	).Scan(&id)
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		return db.QueryRowContext(ctx,
+			`INSERT INTO runs (kind, name, started_at, attrs) VALUES (?, ?, ?, ?) RETURNING id`,
+			kind, name, time.Now(), marshalAttrs(attrs),
+		).Scan(&id)
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -108,64 +96,92 @@ func (s *Store) Begin(ctx context.Context, kind, name string, attrs map[string]s
 }
 
 func (s *Store) RollUp(ctx context.Context, id int64) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return ErrUnavailable
 	}
 	if id == 0 {
 		return nil
 	}
-	if err := ctx.Err(); err != nil {
+	return s.h.Do(ctx, func(db *sql.DB) error {
+		_, err := db.ExecContext(ctx,
+			`UPDATE runs SET finished_at = ?,
+			   count = coalesce((SELECT sum(count) FROM runs WHERE parent_id = ?), 0)
+			 WHERE id = ?`, time.Now(), id, id)
 		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE runs SET finished_at = ?,
-		   count = coalesce((SELECT sum(count) FROM runs WHERE parent_id = ?), 0)
-		 WHERE id = ?`, time.Now(), id, id)
-	return err
+	})
 }
 
 func (s *Store) Add(ctx context.Context, run Run, records []Record) (int64, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	var id int64
-	if err := tx.QueryRowContext(ctx,
-		`INSERT INTO runs (parent_id, kind, name, started_at, finished_at, count, error, attrs)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-		duckdb.NullInt(run.ParentID), run.Kind, run.Name, run.Started, run.Finished,
-		run.Count, duckdb.NullStr(run.Error), marshalAttrs(run.Attrs),
-	).Scan(&id); err != nil {
-		return 0, err
-	}
-	for _, r := range records {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO records (run_id, ts, attrs) VALUES (?, ?, ?)`,
-			id, duckdb.NullTime(r.Ts), marshalAttrs(r.Attrs),
-		); err != nil {
-			return 0, err
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
 		}
-	}
-	if err := tx.Commit(); err != nil {
+		defer tx.Rollback()
+		if err := tx.QueryRowContext(ctx,
+			`INSERT INTO runs (parent_id, kind, name, started_at, finished_at, count, error, attrs)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			duckdb.NullInt(run.ParentID), run.Kind, run.Name, run.Started, run.Finished,
+			run.Count, duckdb.NullStr(run.Error), marshalAttrs(run.Attrs),
+		).Scan(&id); err != nil {
+			return err
+		}
+		for _, r := range records {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO records (run_id, ts, attrs) VALUES (?, ?, ?)`,
+				id, duckdb.NullTime(r.Ts), marshalAttrs(r.Attrs),
+			); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
+	if err != nil {
 		return 0, err
 	}
 	return id, nil
 }
 
+// Delete removes a run, the runs rolled up under it, and every record either
+// holds. Deleting an unknown id is not an error: the outcome the caller asked
+// for — that run is gone — already holds.
+func (s *Store) Delete(ctx context.Context, id int64) error {
+	if s == nil || s.h == nil {
+		return ErrUnavailable
+	}
+	if id == 0 {
+		return nil
+	}
+	return s.h.Do(ctx, func(db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		stmts := []string{
+			`DELETE FROM records WHERE run_id = ? OR run_id IN (SELECT id FROM runs WHERE parent_id = ?)`,
+			`DELETE FROM runs WHERE parent_id = ?`,
+			`DELETE FROM runs WHERE id = ?`,
+		}
+		for i, stmt := range stmts {
+			args := []any{id}
+			if i == 0 {
+				args = append(args, id)
+			}
+			if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+				return err
+			}
+		}
+		return tx.Commit()
+	})
+}
+
 func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
 	}
 	if limit <= 0 {
@@ -176,7 +192,7 @@ func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
 }
 
 func (s *Store) Children(ctx context.Context, parentID int64) ([]Run, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
 	}
 	return s.queryRuns(ctx, `SELECT id, kind, name, started_at, finished_at, count, error, attrs
@@ -184,7 +200,7 @@ func (s *Store) Children(ctx context.Context, parentID int64) ([]Run, error) {
 }
 
 func (s *Store) Get(ctx context.Context, id int64) (Run, bool, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return Run{}, false, ErrUnavailable
 	}
 	runs, err := s.queryRuns(ctx, `SELECT id, kind, name, started_at, finished_at, count, error, attrs
@@ -196,72 +212,88 @@ func (s *Store) Get(ctx context.Context, id int64) (Run, bool, error) {
 }
 
 func (s *Store) Records(ctx context.Context, runID int64) ([]Record, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rows, err := s.db.QueryContext(ctx, `SELECT ts, attrs FROM records WHERE run_id = ? ORDER BY ts DESC`, runID)
+	var out []Record
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		rows, err := db.QueryContext(ctx, `SELECT ts, attrs FROM records WHERE run_id = ? ORDER BY ts DESC`, runID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var found []Record
+		for rows.Next() {
+			var r Record
+			var ts sql.NullTime
+			var attrs sql.NullString
+			if err := rows.Scan(&ts, &attrs); err != nil {
+				return err
+			}
+			r.Ts, r.Attrs = ts.Time, unmarshalAttrs(attrs.String)
+			found = append(found, r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = found
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Record
-	for rows.Next() {
-		var r Record
-		var ts sql.NullTime
-		var attrs sql.NullString
-		if err := rows.Scan(&ts, &attrs); err != nil {
-			return nil, err
-		}
-		r.Ts, r.Attrs = ts.Time, unmarshalAttrs(attrs.String)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Query runs an ad-hoc SQL statement against the open journal and returns a
 // string table. Intended for read-only inspection UIs.
 func (s *Store) Query(ctx context.Context, query string, args ...any) (Result, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return Result{}, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
+	var res Result
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		var err error
+		res, err = queryDB(ctx, db, query, args...)
+		return err
+	})
+	if err != nil {
 		return Result{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return queryDB(ctx, s.db, query, args...)
+	return res, nil
 }
 
 func (s *Store) queryRuns(ctx context.Context, query string, args ...any) ([]Run, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	var out []Run
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		rows, err := db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var found []Run
+		for rows.Next() {
+			var r Run
+			var name, errText, attrs sql.NullString
+			var fin sql.NullTime
+			var count sql.NullInt64
+			if err := rows.Scan(&r.ID, &r.Kind, &name, &r.Started, &fin, &count, &errText, &attrs); err != nil {
+				return err
+			}
+			r.Name, r.Finished, r.Count, r.Error = name.String, fin.Time, int(count.Int64), errText.String
+			r.Attrs = unmarshalAttrs(attrs.String)
+			found = append(found, r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = found
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []Run
-	for rows.Next() {
-		var r Run
-		var name, errText, attrs sql.NullString
-		var fin sql.NullTime
-		var count sql.NullInt64
-		if err := rows.Scan(&r.ID, &r.Kind, &name, &r.Started, &fin, &count, &errText, &attrs); err != nil {
-			return nil, err
-		}
-		r.Name, r.Finished, r.Count, r.Error = name.String, fin.Time, int(count.Int64), errText.String
-		r.Attrs = unmarshalAttrs(attrs.String)
-		out = append(out, r)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func queryDB(ctx context.Context, db *sql.DB, query string, args ...any) (Result, error) {

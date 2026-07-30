@@ -126,7 +126,7 @@ func TestDeviceTokenSubSecondPollInterval(t *testing.T) {
 	tok, _, err := DeviceToken(context.Background(), &bytes.Buffer{}, DeviceFlowOptions{
 		ClientID: "cid", CodeURL: srv.URL + "/device/code", TokenURL: srv.URL + "/oauth/token",
 		HTTPClient: srv.Client(), Open: func(string) error { return nil }, Sleep: func(time.Duration) {},
-		PollInterval: 100 * time.Millisecond, // must not panic via maxPolls div-by-zero
+		PollInterval: 100 * time.Millisecond,
 	})
 	if err != nil || tok != "t" {
 		t.Fatalf("tok=%q err=%v", tok, err)

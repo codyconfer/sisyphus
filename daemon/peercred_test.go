@@ -6,10 +6,6 @@ import (
 	"time"
 )
 
-// A same-UID client must be accepted by allowPeer on every platform that has a
-// peer-credential check (linux via SO_PEERCRED, darwin/freebsd via LOCAL_PEERCRED).
-// Cross-UID rejection cannot be exercised in a unit test without a second user, so
-// this guards only that a legitimate same-UID dial is not wrongly refused.
 func TestAllowPeerAcceptsSameUID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.sock")
 	ln, err := Listen("test", path)

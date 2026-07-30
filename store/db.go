@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sync"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
 )
@@ -15,9 +14,7 @@ var ErrUnavailable = errors.New("store unavailable")
 // DB is a plugin-owned DuckDB file opened with an optional schema. Paths should
 // be included in the app backup set.
 type DB struct {
-	mu   sync.Mutex
-	db   *sql.DB
-	path string
+	h *duckdb.Handle
 }
 
 // Open opens (or creates) a DuckDB database at path, applying schema when
@@ -26,12 +23,12 @@ func Open(ctx context.Context, path, schema string) (*DB, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	db, err := duckdb.Open(ctx, path, schema)
-	if err != nil {
+	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
 	RegisterBackupPath(path)
-	return &DB{db: db, path: path}, nil
+	return &DB{h: h}, nil
 }
 
 // Path returns the on-disk database path for backup inclusion.
@@ -39,46 +36,40 @@ func (d *DB) Path() string {
 	if d == nil {
 		return ""
 	}
-	return d.path
+	return d.h.Path()
 }
 
 func (d *DB) Close() error {
 	if d == nil {
 		return nil
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.db == nil {
-		return nil
-	}
-	err := d.db.Close()
-	d.db = nil
-	return err
+	return d.h.Close()
 }
 
 // Query runs a SQL statement and returns a string table.
 func (d *DB) Query(ctx context.Context, query string, args ...any) (Result, error) {
-	if d == nil || d.db == nil {
+	if d == nil || d.h == nil {
 		return Result{}, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
+	var res Result
+	err := d.h.Do(ctx, func(db *sql.DB) error {
+		var err error
+		res, err = queryDB(ctx, db, query, args...)
+		return err
+	})
+	if err != nil {
 		return Result{}, err
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return queryDB(ctx, d.db, query, args...)
+	return res, nil
 }
 
 // Exec runs a non-returning SQL statement.
 func (d *DB) Exec(ctx context.Context, query string, args ...any) error {
-	if d == nil || d.db == nil {
+	if d == nil || d.h == nil {
 		return ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
+	return d.h.Do(ctx, func(db *sql.DB) error {
+		_, err := db.ExecContext(ctx, query, args...)
 		return err
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	_, err := d.db.ExecContext(ctx, query, args...)
-	return err
+	})
 }

@@ -87,7 +87,6 @@ func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (acce
 	if opts.PollInterval > 0 {
 		interval = opts.PollInterval
 	}
-	// Clamp so maxPolls never divides by zero (sub-second PollInterval).
 	if interval < time.Second {
 		interval = time.Second
 	}

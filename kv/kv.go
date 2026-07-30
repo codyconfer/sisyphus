@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
@@ -31,200 +30,207 @@ type Entry struct {
 }
 
 type Store struct {
-	mu sync.Mutex
-	db *sql.DB
+	h *duckdb.Handle
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := duckdb.Open(ctx, path, schema)
-	if err != nil {
+	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
-	return &Store{db: db}, nil
+	return &Store{h: h}, nil
 }
 
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.db == nil {
-		return nil
-	}
-	err := s.db.Close()
-	s.db = nil
-	return err
+	return s.h.Close()
 }
 
 func (s *Store) Get(ctx context.Context, namespace, key string) (Entry, bool, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return Entry{}, false, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return Entry{}, false, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	var e Entry
-	var expiry, updated sql.NullTime
-	err := s.db.QueryRowContext(ctx,
-		`SELECT value, expiry, updated_at FROM kv WHERE namespace = ? AND key = ?`, namespace, key,
-	).Scan(&e.Value, &expiry, &updated)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Entry{}, false, nil
-	}
+	var found bool
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		e, found = Entry{}, false
+		var expiry, updated sql.NullTime
+		var got Entry
+		err := db.QueryRowContext(ctx,
+			`SELECT value, expiry, updated_at FROM kv WHERE namespace = ? AND key = ?`, namespace, key,
+		).Scan(&got.Value, &expiry, &updated)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		got.Expiry, got.Updated = expiry.Time, updated.Time
+		if expired(got.Expiry) {
+			_, _ = db.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ? AND key = ?`, namespace, key)
+			return nil
+		}
+		e, found = got, true
+		return nil
+	})
 	if err != nil {
 		return Entry{}, false, err
 	}
-	e.Expiry, e.Updated = expiry.Time, updated.Time
-	if expired(e.Expiry) {
-		_, _ = s.db.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ? AND key = ?`, namespace, key)
-		return Entry{}, false, nil
-	}
-	return e, true, nil
+	return e, found, nil
 }
 
 func (s *Store) Put(ctx context.Context, namespace, key, value string, expiry time.Time) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ? AND key = ?`, namespace, key); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO kv (namespace, key, value, expiry, updated_at) VALUES (?, ?, ?, ?, ?)`,
-		namespace, key, value, duckdb.NullTime(expiry), time.Now(),
-	); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return s.h.Do(ctx, func(db *sql.DB) error {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err := tx.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ? AND key = ?`, namespace, key); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO kv (namespace, key, value, expiry, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			namespace, key, value, duckdb.NullTime(expiry), time.Now(),
+		); err != nil {
+			return err
+		}
+		return tx.Commit()
+	})
 }
 
 func (s *Store) Delete(ctx context.Context, namespace, key string) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
+	return s.h.Do(ctx, func(db *sql.DB) error {
+		_, err := db.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ? AND key = ?`, namespace, key)
 		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, err := s.db.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ? AND key = ?`, namespace, key)
-	return err
+	})
 }
 
 func (s *Store) List(ctx context.Context, namespace string) (map[string]Entry, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.sweepLocked(ctx); err != nil {
-		return nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT key, value, expiry, updated_at FROM kv WHERE namespace = ?`, namespace)
+	var out map[string]Entry
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		if _, err := sweepOn(ctx, db); err != nil {
+			return err
+		}
+		rows, err := db.QueryContext(ctx, `SELECT key, value, expiry, updated_at FROM kv WHERE namespace = ?`, namespace)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		found := map[string]Entry{}
+		for rows.Next() {
+			var key string
+			var e Entry
+			var expiry, updated sql.NullTime
+			if err := rows.Scan(&key, &e.Value, &expiry, &updated); err != nil {
+				return err
+			}
+			e.Expiry, e.Updated = expiry.Time, updated.Time
+			found[key] = e
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = found
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := map[string]Entry{}
-	for rows.Next() {
-		var key string
-		var e Entry
-		var expiry, updated sql.NullTime
-		if err := rows.Scan(&key, &e.Value, &expiry, &updated); err != nil {
-			return nil, err
-		}
-		e.Expiry, e.Updated = expiry.Time, updated.Time
-		out[key] = e
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Namespaces lists the namespaces that currently hold entries, expired ones swept first.
 func (s *Store) Namespaces(ctx context.Context) ([]string, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.sweepLocked(ctx); err != nil {
-		return nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT namespace FROM kv ORDER BY namespace`)
+	var out []string
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		if _, err := sweepOn(ctx, db); err != nil {
+			return err
+		}
+		rows, err := db.QueryContext(ctx, `SELECT DISTINCT namespace FROM kv ORDER BY namespace`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var found []string
+		for rows.Next() {
+			var ns string
+			if err := rows.Scan(&ns); err != nil {
+				return err
+			}
+			found = append(found, ns)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = found
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var ns string
-		if err := rows.Scan(&ns); err != nil {
-			return nil, err
-		}
-		out = append(out, ns)
-	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // Clear deletes every entry in a namespace, or the whole store when namespace is empty.
 func (s *Store) Clear(ctx context.Context, namespace string) (int64, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var res sql.Result
-	var err error
-	if namespace == "" {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM kv`)
-	} else {
-		res, err = s.db.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ?`, namespace)
-	}
+	var n int64
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		var res sql.Result
+		var err error
+		if namespace == "" {
+			res, err = db.ExecContext(ctx, `DELETE FROM kv`)
+		} else {
+			res, err = db.ExecContext(ctx, `DELETE FROM kv WHERE namespace = ?`, namespace)
+		}
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
 	return n, nil
 }
 
 // Sweep deletes all expired entries. Safe to call periodically; List also sweeps.
 func (s *Store) Sweep(ctx context.Context) (int64, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
+	var n int64
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		var err error
+		n, err = sweepOn(ctx, db)
+		return err
+	})
+	if err != nil {
 		return 0, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.sweepLocked(ctx)
+	return n, nil
 }
 
-func (s *Store) sweepLocked(ctx context.Context) (int64, error) {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM kv WHERE expiry IS NOT NULL AND expiry <= ?`, time.Now())
+func sweepOn(ctx context.Context, db *sql.DB) (int64, error) {
+	res, err := db.ExecContext(ctx, `DELETE FROM kv WHERE expiry IS NOT NULL AND expiry <= ?`, time.Now())
 	if err != nil {
 		return 0, err
 	}

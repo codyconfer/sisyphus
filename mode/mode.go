@@ -90,7 +90,7 @@ func Gate(ctx context.Context, m Mode, hooks GateHooks) error {
 			return hooks.DeckRequire(ctx)
 		}
 		return nil
-	default: // ModeCLI and unknown
+	default:
 		switch state {
 		case AuthUnauthenticated:
 			if hooks.CLIUnauthenticated != nil {

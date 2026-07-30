@@ -23,9 +23,8 @@ func TestLoopbackAuthCodeHappy(t *testing.T) {
 			Timeout: 5 * time.Second,
 			Open: func(authURL string) error {
 				go func() {
-					// Extract redirect from buildURL by hitting callback after a short delay.
 					time.Sleep(20 * time.Millisecond)
-					resp, err := http.Get(authURL) // authURL is the "authorize" URL we construct below
+					resp, err := http.Get(authURL)
 					if err != nil {
 						errCh <- err
 						return
@@ -35,7 +34,6 @@ func TestLoopbackAuthCodeHappy(t *testing.T) {
 				return nil
 			},
 		}, func(redirect, state string) string {
-			// Return a URL that, when GETted, completes the OAuth callback.
 			return fmt.Sprintf("%s?code=authcode&state=%s", redirect, state)
 		})
 		if err != nil {
@@ -72,13 +70,10 @@ func TestLoopbackAuthCodeStateMismatch(t *testing.T) {
 			Open: func(authURL string) error {
 				go func() {
 					time.Sleep(20 * time.Millisecond)
-					// Wrong state
 					resp, err := http.Get(authURL + "wrong")
 					if err == nil {
 						resp.Body.Close()
 					}
-					// Also hit with wrong state query on the real redirect embedded in authURL —
-					// buildURL returns redirect?code=x&state=bad deliberately.
 				}()
 				return nil
 			},

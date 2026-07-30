@@ -3,6 +3,7 @@ package sealed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -76,5 +77,56 @@ func TestNilStore(t *testing.T) {
 	}
 	if err := s.Put(context.Background(), "x", Entry{AccessToken: "a"}); err == nil {
 		t.Fatal("nil Put should error")
+	}
+}
+
+func TestRefreshTokenOutlivesAccessTokenExpiry(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	want := Entry{
+		AccessToken:  "stale",
+		RefreshToken: "r1",
+		Scope:        "repo",
+		Expiry:       time.Now().Add(-time.Hour),
+	}
+	if err := s.Put(ctx, "google", want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Get(ctx, "google")
+	if err != nil || !ok {
+		t.Fatalf("Get after access-token expiry = ok %v err %v, want the entry back", ok, err)
+	}
+	if got.RefreshToken != "r1" {
+		t.Fatalf("RefreshToken = %q, want r1", got.RefreshToken)
+	}
+	if !got.Expiry.Equal(want.Expiry) {
+		t.Fatalf("Expiry = %v, want %v preserved in the payload", got.Expiry, want.Expiry)
+	}
+}
+
+func TestExpiredEntryWithoutRefreshTokenIsSwept(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	e := Entry{AccessToken: "stale", Expiry: time.Now().Add(-time.Hour)}
+	if err := s.Put(ctx, "slack", e); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.Get(ctx, "slack"); ok || err != nil {
+		t.Fatalf("Get = ok %v err %v, want a miss for an expired entry with no refresh token", ok, err)
+	}
+}
+
+func TestUndecodableValueIsNotReportedAsAMiss(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if err := s.kv.Put(ctx, "tokens", "github", "!!neither-base64-nor-json!!", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err := s.Get(ctx, "github")
+	if ok {
+		t.Fatal("Get should not report a value it cannot decode as present")
+	}
+	if !errors.Is(err, ErrUndecodable) {
+		t.Fatalf("Get error = %v, want ErrUndecodable so a lost key is distinguishable from a miss", err)
 	}
 }
