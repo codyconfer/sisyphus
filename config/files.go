@@ -104,7 +104,8 @@ func writeAtomic(path string, content []byte) error {
 	name := tmp.Name()
 	defer func() {
 		tmp.Close()
-		os.Remove(name)
+		// Best-effort: after a successful rename there is nothing left to remove.
+		_ = os.Remove(name)
 	}()
 	if err := tmp.Chmod(0o600); err != nil {
 		return err
