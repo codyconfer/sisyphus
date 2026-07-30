@@ -87,10 +87,17 @@ var secretTerms = []string{
 	"cookie", "session", "signature", "salt", "otp", "passcode",
 }
 
+var selectorSuffixes = []string{"_env", "_id", "_backend", "_name"}
+
 func Key(k string) bool {
 	k = strings.ToLower(strings.TrimSpace(k))
-	if strings.HasSuffix(k, "_env") || strings.HasSuffix(k, "_id") || k == "id" {
+	if k == "id" {
 		return false
+	}
+	for _, suffix := range selectorSuffixes {
+		if strings.HasSuffix(k, suffix) {
+			return false
+		}
 	}
 	for _, term := range secretTerms {
 		if strings.Contains(k, term) {

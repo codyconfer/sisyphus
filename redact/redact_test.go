@@ -55,6 +55,73 @@ func TestConfigMultiLineValue(t *testing.T) {
 	}
 }
 
+func TestKeySelectorsAreNotSecrets(t *testing.T) {
+	notSecret := []string{
+		"secret_backend", "secret_name", "SECRET_BACKEND", "Secret_Name",
+		"  secret_name  ", "backup.secret_backend", "token_env", "oauth_client_id",
+		"id", "name", "credential_name", "session_name", "output",
+	}
+	for _, k := range notSecret {
+		if Key(k) {
+			t.Errorf("Key(%q) = true, want false: selector keys name a backend or a key, they are not secrets", k)
+		}
+	}
+
+	stillSecret := []string{
+		"oauth_client_secret", "client_secret", "secret", "password", "passwd",
+		"passphrase", "pwd", "token", "access_token", "refresh_token", "apikey",
+		"api_key", "accesskey", "access_key", "private_key", "privatekey",
+		"credential", "bearer", "cookie", "session", "signature", "salt", "otp",
+		"passcode", "secret_value", "SECRET",
+	}
+	for _, k := range stillSecret {
+		if !Key(k) {
+			t.Errorf("Key(%q) = false, want true: this must stay masked", k)
+		}
+	}
+}
+
+func TestConfigKeepsBackupSelectorsUsable(t *testing.T) {
+	in := []byte(strings.Join([]string{
+		"backup:",
+		"  secret_backend: keyring",
+		"  secret_name: munin-backup-key",
+		"google:",
+		"  oauth_client_secret: super-secret-value",
+		"",
+	}, "\n"))
+	got := Config(in, "yaml")
+
+	if !strings.Contains(got, "keyring") {
+		t.Errorf("secret_backend value was masked; a redacted config would break backups:\n%s", got)
+	}
+	if !strings.Contains(got, "munin-backup-key") {
+		t.Errorf("secret_name value was masked; a redacted config would rotate the backup key:\n%s", got)
+	}
+	if strings.Contains(got, "super-secret-value") {
+		t.Errorf("oauth_client_secret must still be masked:\n%s", got)
+	}
+	if !strings.Contains(got, Mask) {
+		t.Errorf("expected mask marker in output:\n%s", got)
+	}
+}
+
+func TestLineKeepsBackupSelectorsUsable(t *testing.T) {
+	in := strings.Join([]string{
+		"secret_backend: keyring",
+		"secret_name: munin-backup-key",
+		"oauth_client_secret: super-secret-value",
+	}, "\n")
+	got := Line(in)
+
+	if !strings.Contains(got, "keyring") || !strings.Contains(got, "munin-backup-key") {
+		t.Errorf("selector values must survive line redaction:\n%s", got)
+	}
+	if strings.Contains(got, "super-secret-value") {
+		t.Errorf("oauth_client_secret must still be masked:\n%s", got)
+	}
+}
+
 func TestConfigNonSecretUnchanged(t *testing.T) {
 	in := []byte("output: terminal\ntoken_env: SLACK_TOKEN\n")
 	got := Config(in, "yaml")
