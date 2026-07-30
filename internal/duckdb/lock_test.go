@@ -208,10 +208,12 @@ func (h *Handle) armedTimer(t *testing.T) *time.Timer {
 	return h.timer
 }
 
-// TestHandleIdleCloseAfterRepeatedArming guards the bookkeeping that lets a
-// single timer be reused: a stale wakeup must be ignored, but the live one must
-// still close the database.
+const repeatedArmingScope = "this test pins only that repeated arming still ends in a close; five puts " +
+	"finish inside one 40ms window, so onIdle runs once with gen == armed and pending == 1 — the " +
+	"stale-wakeup guards it names are covered by TestHandleIgnoresStaleIdleWakeup"
+
 func TestHandleIdleCloseAfterRepeatedArming(t *testing.T) {
+	t.Log(repeatedArmingScope)
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "a.duckdb")
 	h := NewHandle(path, testSchema, Options{Idle: 40 * time.Millisecond, Timeout: 10 * time.Second})
@@ -235,5 +237,56 @@ func TestHandleIdleCloseAfterRepeatedArming(t *testing.T) {
 				"wakeup was dropped")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (h *Handle) isOpen() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.db != nil
+}
+
+const staleWakeupContract = "a timer that has already expired cannot be called off, so its goroutine " +
+	"reaches the mutex after the handle was reused; onIdle is driven directly here because " +
+	"reproducing either guard by sleeping is what makes a timing test pass for the wrong reason"
+
+func TestHandleIgnoresStaleIdleWakeup(t *testing.T) {
+	t.Log(staleWakeupContract)
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "a.duckdb")
+	h := NewHandle(path, testSchema, Options{Idle: time.Hour, Timeout: 10 * time.Second})
+	t.Cleanup(func() { _ = h.Close() })
+
+	if err := put(ctx, h, "k", "v"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if !h.isOpen() {
+		t.Fatal("database is not open after a put; nothing below is meaningful")
+	}
+
+	h.mu.Lock()
+	h.gen++
+	h.pending = 1
+	h.mu.Unlock()
+	h.onIdle()
+	if !h.isOpen() {
+		t.Fatal("a wakeup armed for an earlier generation closed the database; the handle had been " +
+			"used again since, so an in-flight caller just lost its connection")
+	}
+
+	h.mu.Lock()
+	h.armed = h.gen
+	h.pending = 2
+	h.mu.Unlock()
+	h.onIdle()
+	if !h.isOpen() {
+		t.Fatal("a wakeup closed the database while a second firing was still owed; the later wakeup " +
+			"is the one that owns the decision")
+	}
+
+	h.onIdle()
+	if h.isOpen() {
+		t.Fatal("the last outstanding wakeup did not close the database, so an idle handle holds the " +
+			"file lock forever")
 	}
 }

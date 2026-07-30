@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Show that a test fails when the code it guards is reverted or mutated.
+
+A test that passes against the pre-fix source guards nothing. This runs the
+suite against an overlay in which one or more files are swapped for an older
+revision, or for a hand-edited variant, and reports whether the named tests
+actually fail there. It never writes to the working tree, so it is safe in a
+shared checkout -- unlike `git stash`, which would take everyone's work with it.
+
+    tools/prove --rev HEAD~1 --run TestFoo ./pkg/ internal/pkg/thing.go
+    tools/prove --sub 'if ok {=>if false {' --run TestFoo ./pkg/ internal/pkg/thing.go
+    tools/prove --rev HEAD --run TestFoo ./pkg/ a.go --drop b_test.go
+
+--rev    revert the listed files to that revision (git show <rev>:<path>)
+--sub    apply OLD=>NEW literal replacements instead of reverting; repeatable
+--drop   remove a file from the overlay entirely; use when a sibling test file
+         references a symbol the reverted source does not have yet, which would
+         turn a real test failure into a compile error
+--run    -run pattern; defaults to every test in the package
+
+Exit status is 0 when the tests FAIL under the overlay -- that is the outcome
+you want, because it means the test is load-bearing. Exit status 1 means the
+tests still passed, so the test does not guard the change.
+
+Two failure modes this cannot see for you:
+  * A race test passes against racy code unless it has an explicit start
+    barrier and a high iteration count, and unless it runs with -race.
+  * A test whose fixture sits below the threshold it is meant to cross, or
+    whose blocker sorts first, passes for reasons unrelated to the property.
+    Vary the fixture rather than adding one case.
+"""
+
+import argparse
+import json
+import os
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+
+def die(msg):
+    print(f"prove: {msg}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def repo_root():
+    out = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True
+    )
+    if out.returncode != 0:
+        die("not inside a git repository")
+    return pathlib.Path(out.stdout.strip())
+
+
+def content_at(rev, path):
+    out = subprocess.run(
+        ["git", "show", f"{rev}:{path}"], capture_output=True, text=True
+    )
+    if out.returncode != 0:
+        die(f"git show {rev}:{path} failed: {out.stderr.strip()}")
+    return out.stdout
+
+
+def apply_subs(text, subs, path):
+    for raw in subs:
+        if "=>" not in raw:
+            die(f"--sub needs OLD=>NEW, got {raw!r}")
+        old, new = raw.split("=>", 1)
+        if old not in text:
+            continue
+        text = text.replace(old, new, 1)
+    return text
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--rev")
+    ap.add_argument("--sub", action="append", default=[])
+    ap.add_argument("--drop", action="append", default=[])
+    ap.add_argument("--run", default="")
+    ap.add_argument("--race", action="store_true")
+    ap.add_argument("-h", "--help", action="store_true")
+    ap.add_argument("pkg", nargs="?")
+    ap.add_argument("files", nargs="*")
+    args = ap.parse_args()
+
+    if args.help or not args.pkg:
+        print(__doc__)
+        return 0
+    if not args.rev and not args.sub:
+        die("pass --rev or --sub")
+    if args.rev and args.sub:
+        die("--rev and --sub are mutually exclusive")
+    if not args.files and not args.drop:
+        die("name at least one file to revert, mutate, or drop")
+
+    root = repo_root()
+    tmp = tempfile.mkdtemp(prefix="prove-")
+    replace = {}
+
+    for rel in args.files:
+        src = root / rel
+        if not src.exists():
+            die(f"{rel} does not exist")
+        if args.rev:
+            text = content_at(args.rev, rel)
+        else:
+            text = apply_subs(src.read_text(), args.sub, rel)
+            if text == src.read_text():
+                die(f"no --sub pattern matched {rel}; the mutation was not applied")
+        dest = pathlib.Path(tmp) / rel.replace(os.sep, "_")
+        dest.write_text(text)
+        replace[str(src)] = str(dest)
+
+    for rel in args.drop:
+        replace[str(root / rel)] = ""
+
+    overlay = pathlib.Path(tmp) / "overlay.json"
+    overlay.write_text(json.dumps({"Replace": replace}, indent=2))
+
+    cmd = ["go", "test", f"-overlay={overlay}"]
+    if args.race:
+        cmd.append("-race")
+    if args.run:
+        cmd += ["-run", args.run]
+    cmd.append(args.pkg)
+
+    print(f"prove: {' '.join(cmd)}", file=sys.stderr)
+    for path, to in sorted(replace.items()):
+        rel = os.path.relpath(path, root)
+        print(f"prove:   {rel} -> {'(dropped)' if to == '' else args.rev or 'mutated'}",
+              file=sys.stderr)
+
+    res = subprocess.run(cmd, cwd=root)
+    if res.returncode == 0:
+        print(
+            "\nprove: FAILED -- the tests still passed against the altered source, "
+            "so they do not guard it.",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        "\nprove: OK -- the tests fail against the altered source, so they are "
+        "load-bearing.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

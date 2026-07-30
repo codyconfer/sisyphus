@@ -12,12 +12,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// withPermissiveUmask makes the ambient umask public for the duration of a test,
-// so that anything relying on the umask to keep a file private fails visibly
-// instead of passing because the developer's shell happened to be strict.
+const umaskContract = "the ambient umask is 0 for this test, so a file's mode is exactly the mode its creator " +
+	"requested; under the 0o022 this helper used to set, a requested 0o622 landed as 0o600 and a " +
+	"group-writable side file passed unnoticed"
+
 func withPermissiveUmask(t *testing.T) {
 	t.Helper()
-	old := unix.Umask(0o022)
+	t.Log(umaskContract)
+	old := unix.Umask(0)
 	t.Cleanup(func() { unix.Umask(old) })
 }
 
@@ -110,7 +112,7 @@ func TestOpenSideFilesArePrivateUnderPermissiveUmask(t *testing.T) {
 			t.Fatalf("%s was never created", path+suffix)
 		}
 		if perm != 0o600 {
-			t.Fatalf("%s perm = %o, want 600", suffix, perm)
+			t.Fatalf("%s perm = %o, want 600: %s", suffix, perm, umaskContract)
 		}
 	}
 }
