@@ -1,9 +1,14 @@
-.PHONY: build test fmt fmt-check vet lint govulncheck check ci
+.PHONY: build test test-race test-shuffle fmt fmt-check vet lint govulncheck check ci
 
 # TAGS — extra build tags threaded through build/vet/lint/test, e.g.
 # `make test TAGS=nodaemon` to exercise the daemon-free configuration.
+# RACE — set to test with the race detector, e.g. `make test RACE=1`.
+# SHUFFLE — set to randomize test order, e.g. `make test SHUFFLE=1`.
 TAGS ?=
+RACE ?=
+SHUFFLE ?=
 GOFLAGS_TAGS := $(if $(TAGS),-tags "$(TAGS)",)
+GOFLAGS_TEST = $(if $(RACE),-race,) $(if $(SHUFFLE),-shuffle=on,) $(GOFLAGS_TAGS)
 
 # Build all packages.
 build:
@@ -32,9 +37,19 @@ lint:
 govulncheck:
 	$(GO_TOOL) govulncheck $(GOFLAGS_TAGS) ./...
 
-# Run the test suite.
+# Run the test suite. Honors RACE=1 (race detector) and SHUFFLE=1 (random test
+# order); `test-race` and `test-shuffle` are the named entrypoints CI uses.
 test:
-	go test $(GOFLAGS_TAGS) ./...
+	go test $(GOFLAGS_TEST) ./...
+
+# Race detector over the whole suite. Slow and CGO-heavy (duckdb), so this is a
+# separate target/job rather than part of `check` — the fast gate stays fast.
+test-race:
+	@$(MAKE) test RACE=1
+
+# Randomized test order. Catches order-dependent tests that share package state.
+test-shuffle:
+	@$(MAKE) test SHUFFLE=1
 
 # Full gate: build, format check, lint, vulncheck, test.
 check: build fmt-check lint govulncheck test

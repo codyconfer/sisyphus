@@ -10,6 +10,9 @@ import (
 const (
 	broadcastWriteTimeout = 10 * time.Second
 	maxBroadcastConns     = 64
+	maxDialFrame          = 4 * 1024 * 1024
+	dialReadBuffer        = 64 * 1024
+	peerDrainBuffer       = 512
 )
 
 func Broadcast[T any](ctx context.Context, ln net.Listener, subj *Subject[T], buffer int, encode func(T) ([]byte, error)) {
@@ -44,9 +47,12 @@ func broadcastConn[T any](ctx context.Context, conn net.Conn, subj *Subject[T], 
 	defer conn.Close()
 	sub := subj.Subscribe(buffer)
 	defer subj.Unsubscribe(sub)
+	departed := watchPeerDeparture(conn)
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-departed:
 			return
 		case v, ok := <-sub:
 			if !ok {
@@ -64,23 +70,57 @@ func broadcastConn[T any](ctx context.Context, conn net.Conn, subj *Subject[T], 
 	}
 }
 
-// Dial connects to a Broadcast listener. prefix is used on Windows named pipes
-// and ignored on Unix (where name is the socket path).
-func Dial[T any](ctx context.Context, prefix, name string, decode func([]byte) (T, error)) (<-chan T, error) {
+func watchPeerDeparture(conn net.Conn) <-chan struct{} {
+	departed := make(chan struct{})
+	go func() {
+		defer close(departed)
+		buf := make([]byte, peerDrainBuffer)
+		for {
+			if _, err := conn.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	return departed
+}
+
+type DialOption func(*dialOptions)
+
+type dialOptions struct {
+	onClose func(error)
+}
+
+func WithDialClose(fn func(error)) DialOption {
+	return func(o *dialOptions) { o.onClose = fn }
+}
+
+func Dial[T any](ctx context.Context, prefix, name string, decode func([]byte) (T, error), opts ...DialOption) (<-chan T, error) {
+	var o dialOptions
+	for _, apply := range opts {
+		if apply != nil {
+			apply(&o)
+		}
+	}
 	conn, err := dialConn(ctx, prefix, name)
 	if err != nil {
 		return nil, err
 	}
 	out := make(chan T)
 	go func() {
+		var reason error
 		defer close(out)
+		defer func() {
+			if o.onClose != nil {
+				o.onClose(reason)
+			}
+		}()
 		defer conn.Close()
 		go func() {
 			<-ctx.Done()
 			_ = conn.Close()
 		}()
 		sc := bufio.NewScanner(conn)
-		sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		sc.Buffer(make([]byte, 0, dialReadBuffer), maxDialFrame)
 		for sc.Scan() {
 			v, err := decode(sc.Bytes())
 			if err != nil {
@@ -89,10 +129,15 @@ func Dial[T any](ctx context.Context, prefix, name string, decode func([]byte) (
 			select {
 			case out <- v:
 			case <-ctx.Done():
+				reason = ctx.Err()
 				return
 			}
 		}
-		_ = sc.Err()
+		if cerr := ctx.Err(); cerr != nil {
+			reason = cerr
+			return
+		}
+		reason = sc.Err()
 	}()
 	return out, nil
 }

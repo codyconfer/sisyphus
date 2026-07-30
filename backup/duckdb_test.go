@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
@@ -82,7 +84,7 @@ func sealArchive(t *testing.T, paths ...string) ([]byte, []byte) {
 	return sealed, key
 }
 
-func TestArchiveCapturesUncheckpointedWAL(t *testing.T) {
+func TestArchiveBacksUpRowsStillInTheWAL(t *testing.T) {
 	src := t.TempDir()
 	path := filepath.Join(src, "x.duckdb")
 	writeRows(t, path, 234, false)
@@ -101,7 +103,8 @@ func TestArchiveCapturesUncheckpointedWAL(t *testing.T) {
 		t.Fatal("restored nothing")
 	}
 	if got := countRows(t, filepath.Join(dst, "x.duckdb")); got != 234 {
-		t.Fatalf("restored copy has %d rows, want 234 (committed rows lived in the WAL at backup time)", got)
+		t.Fatalf("restored copy has %d rows, want 234: Archive must CHECKPOINT the source so rows "+
+			"committed only to its write-ahead log are in the file it copies", got)
 	}
 }
 
@@ -192,53 +195,232 @@ func TestArchiveRefusesOrphanWAL(t *testing.T) {
 	}
 }
 
-func TestRestoreStagesBeforeReplacing(t *testing.T) {
-	dir := t.TempDir()
-	src := t.TempDir()
-	keep := map[string]string{}
+var restoreKeepers = []string{"k1.duckdb", "k2.duckdb", "k4.duckdb", "k5.duckdb", "k6.duckdb"}
+
+var blockerPositions = []struct {
+	where string
+	base  string
+	at    int
+}{
+	{"first", "aa-blocked.duckdb", 0},
+	{"middle", "k3-blocked.duckdb", 2},
+	{"last", "zz-blocked.duckdb", 5},
+}
+
+func seedRestoreFixture(t *testing.T, dir, src, blocker string) ([]byte, []byte, map[string]string) {
+	t.Helper()
+	want := map[string]string{}
 	paths := []string{}
-	for _, base := range []string{"k1.duckdb", "k2.duckdb", "k3.duckdb", "k4.duckdb", "k5.duckdb", "k6.duckdb", "k7.duckdb", "k8.duckdb"} {
+	for _, base := range append(append([]string{}, restoreKeepers...), blocker) {
 		p := filepath.Join(src, base)
 		if err := os.WriteFile(p, []byte("new "+base), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		paths = append(paths, p)
-		keep[base] = "old " + base
-		if err := os.WriteFile(filepath.Join(dir, base), []byte(keep[base]), 0o600); err != nil {
+	}
+	for _, base := range restoreKeepers {
+		want[base] = "old " + base
+		if err := os.WriteFile(filepath.Join(dir, base), []byte(want[base]), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	blocker := filepath.Join(src, "a-blocked.duckdb")
-	if err := os.WriteFile(blocker, []byte("new blocker"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	paths = append(paths, blocker)
-	if err := os.MkdirAll(filepath.Join(dir, "a-blocked.duckdb", "child"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-
 	sealed, key := sealArchive(t, paths...)
+	return sealed, key, want
+}
 
-	if _, err := Restore(context.Background(), sealed, key, dir); err == nil {
-		t.Fatal("expected restore to fail when a destination cannot be replaced")
-	}
-	for base, want := range keep {
+func assertUnchanged(t *testing.T, dir string, want map[string]string) {
+	t.Helper()
+	for base, w := range want {
 		got, err := os.ReadFile(filepath.Join(dir, base))
 		if err != nil {
 			t.Fatalf("reading %s: %v", base, err)
 		}
-		if string(got) != want {
-			t.Errorf("%s = %q, want %q: a failed restore must leave the previous state intact", base, got, want)
+		if string(got) != w {
+			t.Errorf("%s = %q, want %q: a failed restore must leave the previous state intact", base, got, w)
 		}
 	}
+}
+
+func assertNoRestoreDirs(t *testing.T, dir string) {
+	t.Helper()
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range ents {
-		if e.IsDir() && len(e.Name()) > 9 && e.Name()[:9] == ".restore-" {
-			t.Errorf("staging directory %s left behind", e.Name())
+		if e.IsDir() && strings.HasPrefix(e.Name(), ".restore-") {
+			t.Errorf("temporary directory %s left behind", e.Name())
 		}
+	}
+}
+
+func TestRestoreFailureLeavesEveryDestinationIntact(t *testing.T) {
+	for _, pos := range blockerPositions {
+		t.Run(pos.where, func(t *testing.T) {
+			dir, src := t.TempDir(), t.TempDir()
+			sealed, key, want := seedRestoreFixture(t, dir, src, pos.base)
+			if err := os.MkdirAll(filepath.Join(dir, pos.base, "child"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			order := append(append([]string{}, restoreKeepers...), pos.base)
+			sort.Strings(order)
+			if order[pos.at] != pos.base {
+				t.Fatalf("fixture: blocker %s is at position %d of %v, not %d",
+					pos.base, indexOf(order, pos.base), order, pos.at)
+			}
+
+			if _, err := Restore(context.Background(), sealed, key, dir); err == nil {
+				t.Fatal("expected restore to fail when a destination cannot be replaced")
+			}
+			assertUnchanged(t, dir, want)
+			if _, err := os.Stat(filepath.Join(dir, pos.base, "child")); err != nil {
+				t.Errorf("%s/child did not survive the failed restore: %v", pos.base, err)
+			}
+			assertNoRestoreDirs(t, dir)
+		})
+	}
+}
+
+func indexOf(all []string, want string) int {
+	for i, s := range all {
+		if s == want {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestRestoreFailureKeepsRowsHeldOnlyInTheWAL(t *testing.T) {
+	for _, base := range []string{"keep.duckdb", "plugin.db"} {
+		t.Run(base, func(t *testing.T) {
+			dir, src := t.TempDir(), t.TempDir()
+			path := filepath.Join(dir, base)
+			writeRows(t, path, 400, false)
+			if walBytes(t, path) == 0 {
+				t.Skip("duckdb left no write-ahead log; fixture cannot reproduce the bug")
+			}
+
+			replacement := filepath.Join(src, base)
+			writeRows(t, replacement, 7, true)
+			blocker := filepath.Join(src, "zz-blocked.duckdb")
+			if err := os.WriteFile(blocker, []byte("new blocker"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(dir, "zz-blocked.duckdb", "child"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			sealed, key := sealArchive(t, replacement, blocker)
+			if _, err := Restore(context.Background(), sealed, key, dir); err == nil {
+				t.Fatal("expected restore to fail when a destination cannot be replaced")
+			}
+			if got := countRows(t, path); got != 400 {
+				t.Fatalf("%s has %d rows after a failed restore, want 400: the committed rows in "+
+					"%s.wal must be replayed or set aside, never deleted", base, got, base)
+			}
+			assertNoRestoreDirs(t, dir)
+		})
+	}
+}
+
+func TestRestoreRefusesWhenALockSidecarIsUnusable(t *testing.T) {
+	for _, base := range []string{"v.duckdb", "plugin.db"} {
+		t.Run(base, func(t *testing.T) {
+			dir, src := t.TempDir(), t.TempDir()
+			path := filepath.Join(dir, base)
+			writeRows(t, path, 400, false)
+			if walBytes(t, path) == 0 {
+				t.Skip("duckdb left no write-ahead log; fixture cannot reproduce the bug")
+			}
+			if err := os.MkdirAll(path+".wait", 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			replacement := filepath.Join(src, base)
+			writeRows(t, replacement, 7, true)
+			sealed, key := sealArchive(t, replacement)
+
+			_, err := Restore(context.Background(), sealed, key, dir)
+			if err == nil {
+				t.Fatalf("restore replaced %s although %s.wait is a directory, so no process holding "+
+					"the database could have been detected", base, base)
+			}
+			if !strings.Contains(err.Error(), base+".wait") {
+				t.Errorf("error = %v, want it to name %s.wait", err, base)
+			}
+			if got := countRows(t, path); got != 400 {
+				t.Fatalf("%s has %d rows after a refused restore, want 400", base, got)
+			}
+			assertNoRestoreDirs(t, dir)
+		})
+	}
+}
+
+func TestArchiveRefusesADatabaseItCannotCheckpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		clean bool
+	}{{"with-wal", false}, {"without-wal", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("root ignores directory permissions")
+			}
+			dir := t.TempDir()
+			path := filepath.Join(dir, "ro.duckdb")
+			writeRows(t, path, 40, tc.clean)
+			if tc.clean && walBytes(t, path) != 0 {
+				t.Skip("fixture left a write-ahead log behind a clean close")
+			}
+			if !tc.clean && walBytes(t, path) == 0 {
+				t.Skip("duckdb left no write-ahead log; fixture cannot reproduce the bug")
+			}
+			if err := os.Chmod(dir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+			_, err := Archive(context.Background(), []string{path})
+			if err == nil {
+				t.Fatal("Archive copied a live database raw instead of refusing: a database that " +
+					"cannot be checkpointed must not be downgraded to a plain read")
+			}
+			if !strings.Contains(err.Error(), "write access") {
+				t.Errorf("error = %v, want it to say a backup needs write access to the database", err)
+			}
+			if strings.Contains(err.Error(), "stop other munin processes") {
+				t.Errorf("error = %v, must not blame a competing process for a permission failure", err)
+			}
+		})
+	}
+}
+
+func TestArchiveTreatsAnyDatabaseHeaderAsADatabase(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plugin.db")
+	writeRows(t, path, 400, true)
+	if walBytes(t, path) != 0 {
+		t.Skip("fixture left a write-ahead log, which the name gate already reacts to")
+	}
+
+	arc, err := Archive(context.Background(), []string{path})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if _, statErr := os.Stat(path + ".lock"); statErr != nil {
+		t.Fatalf("plugin.db was copied as a plain file: no database lock was taken (%v); a database "+
+			"must be recognised by its header, not by a .duckdb name", statErr)
+	}
+	entries, err := Extract(arc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "plugin.db")
+	if err := os.WriteFile(dst, entries["plugin.db"], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, dst); got != 400 {
+		t.Fatalf("archived copy of plugin.db has %d rows, want 400", got)
 	}
 }
 

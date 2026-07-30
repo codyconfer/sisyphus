@@ -13,6 +13,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Race detector. Its own job, not a flag on `check`: race builds are slow and
+  # CGO-heavy here (duckdb), and the fast signal is worth keeping.
+  race:
+    name: race
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: make test-race
+        run: make test-race
+
+  # Randomized test order, to catch tests that depend on execution order.
+  shuffle:
+    name: shuffle
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: make test-shuffle
+        run: make test-shuffle
+
   check:
     name: check (${{ matrix.os }})
     strategy:

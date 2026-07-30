@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,10 +26,23 @@ const KeyBytes = 32
 const (
 	walSuffix  = ".wal"
 	tempSuffix = ".tmp"
-	dbExt      = ".duckdb"
+	lockSuffix = ".lock"
+	wantSuffix = ".wait"
+)
+
+const (
+	stagePrefix = ".restore-stage-"
+	asidePrefix = ".restore-aside-"
+)
+
+const (
+	duckMagic       = "DUCK"
+	duckMagicOffset = 8
 )
 
 const lockTimeout = 15 * time.Second
+
+var renameFile = os.Rename
 
 func NewKey() ([]byte, error) {
 	k := make([]byte, KeyBytes)
@@ -99,7 +113,11 @@ func snapshot(ctx context.Context, path string) ([]file, error) {
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	if !looksLikeDB(path) {
+	db, err := isDatabase(path)
+	if err != nil {
+		return nil, fmt.Errorf("examining %s: %w", path, err)
+	}
+	if !db {
 		return readPlain(path)
 	}
 	return snapshotDB(ctx, path)
@@ -118,15 +136,6 @@ func snapshotDB(ctx context.Context, path string) ([]file, error) {
 			return err
 		}
 		out = []file{{name: filepath.Base(path), data: data}}
-		wal, err := os.ReadFile(path + walSuffix)
-		switch {
-		case err == nil:
-			if len(wal) > 0 {
-				out = append(out, file{name: filepath.Base(path) + walSuffix, data: wal})
-			}
-		case !errors.Is(err, os.ErrNotExist):
-			return err
-		}
 		return nil
 	})
 	if err == nil {
@@ -135,11 +144,17 @@ func snapshotDB(ctx context.Context, path string) ([]file, error) {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
-	if held(err) || hasWAL(path) {
-		return nil, fmt.Errorf("refusing to back up %s: cannot snapshot it safely: %w "+
-			"(stop other munin processes holding it and retry)", filepath.Base(path), err)
+	base := filepath.Base(path)
+	switch {
+	case held(err):
+		return nil, fmt.Errorf("refusing to back up %s: another process is holding it: %w "+
+			"(stop other munin processes holding it and retry)", base, err)
+	case errors.Is(err, fs.ErrPermission):
+		return nil, fmt.Errorf("refusing to back up %s: backing up a database rewrites it — it is "+
+			"checkpointed before it is read — so it needs write access to the file and its directory, "+
+			"which read-only media cannot give: %w", base, err)
 	}
-	return readPlain(path)
+	return nil, fmt.Errorf("refusing to back up %s: cannot snapshot it safely: %w", base, err)
 }
 
 func readPlain(path string) ([]file, error) {
@@ -150,11 +165,27 @@ func readPlain(path string) ([]file, error) {
 	return []file{{name: filepath.Base(path), data: data}}, nil
 }
 
-func looksLikeDB(path string) bool {
-	if strings.EqualFold(filepath.Ext(path), dbExt) {
-		return true
+func isDatabase(path string) (bool, error) {
+	if hasWAL(path) {
+		return true, nil
 	}
-	return hasWAL(path)
+	f, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() { _ = f.Close() }()
+	head := make([]byte, duckMagicOffset+len(duckMagic))
+	switch _, err := io.ReadFull(f, head); {
+	case err == nil:
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return false, nil
+	default:
+		return false, err
+	}
+	return string(head[duckMagicOffset:]) == duckMagic, nil
 }
 
 func hasWAL(path string) bool {
@@ -163,21 +194,10 @@ func hasWAL(path string) bool {
 }
 
 func held(err error) bool {
-	if errors.Is(err, duckdb.ErrClosed) {
-		return true
+	if err == nil {
+		return false
 	}
-	s := err.Error()
-	for _, marker := range []string{
-		"locked by another process",
-		"timed out queueing",
-		"Conflicting lock is held",
-		"Could not set lock on file",
-	} {
-		if strings.Contains(s, marker) {
-			return true
-		}
-	}
-	return false
+	return errors.Is(err, duckdb.ErrLocked) || errors.Is(err, duckdb.ErrClosed)
 }
 
 func Encrypt(plaintext, key []byte) ([]byte, error) {
@@ -236,11 +256,14 @@ func Restore(ctx context.Context, sealed, key []byte, destDir string) ([]string,
 	}
 	sort.Strings(names)
 
+	if err := checkReplaceable(destDir, names); err != nil {
+		return nil, err
+	}
 	if err := checkUnheld(ctx, destDir, names); err != nil {
 		return nil, err
 	}
 
-	stage, err := os.MkdirTemp(destDir, ".restore-")
+	stage, err := os.MkdirTemp(destDir, stagePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("staging restore in %s: %w", destDir, err)
 	}
@@ -250,49 +273,165 @@ func Restore(ctx context.Context, sealed, key []byte, destDir string) ([]string,
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(filepath.Join(stage, base), entries[base], 0o600); err != nil {
+		if err := writeSynced(filepath.Join(stage, base), entries[base]); err != nil {
 			return nil, fmt.Errorf("staging %s: %w", base, err)
 		}
 	}
-	for _, base := range names {
-		if err := clearSidecars(filepath.Join(destDir, base)); err != nil {
-			return nil, err
-		}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	for _, base := range names {
-		if err := os.Rename(filepath.Join(stage, base), filepath.Join(destDir, base)); err != nil {
-			return nil, fmt.Errorf("writing %s: %w", base, err)
-		}
+
+	aside, err := os.MkdirTemp(destDir, asidePrefix)
+	if err != nil {
+		return nil, fmt.Errorf("preparing the rollback area in %s: %w", destDir, err)
 	}
+	sw := &swap{dest: destDir, stage: stage, aside: aside}
+	if err := sw.run(names); err != nil {
+		return nil, err
+	}
+	syncDir(destDir)
+	_ = os.RemoveAll(aside)
 	return names, nil
 }
 
-func clearSidecars(path string) error {
-	if strings.HasSuffix(path, walSuffix) {
-		return nil
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
 	}
-	if err := os.Remove(path + walSuffix); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("removing stale %s: %w", filepath.Base(path)+walSuffix, err)
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
 	}
-	if err := os.RemoveAll(path + tempSuffix); err != nil {
-		return fmt.Errorf("removing stale %s: %w", filepath.Base(path)+tempSuffix, err)
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func syncDir(dir string) {
+	f, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	_ = f.Sync()
+	_ = f.Close()
+}
+
+type swap struct {
+	dest   string
+	stage  string
+	aside  string
+	moved  []string
+	placed []string
+}
+
+func (s *swap) run(names []string) error {
+	for _, base := range names {
+		for _, name := range []string{base, base + walSuffix, base + tempSuffix} {
+			if err := s.setAside(name); err != nil {
+				return s.abort(fmt.Errorf("setting %s aside: %w", name, err))
+			}
+		}
+	}
+	for _, base := range names {
+		if err := renameFile(filepath.Join(s.stage, base), filepath.Join(s.dest, base)); err != nil {
+			return s.abort(fmt.Errorf("writing %s: %w", base, err))
+		}
+		s.placed = append(s.placed, base)
+	}
+	return nil
+}
+
+func (s *swap) setAside(name string) error {
+	from := filepath.Join(s.dest, name)
+	if _, err := os.Lstat(from); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err := renameFile(from, filepath.Join(s.aside, name)); err != nil {
+		return err
+	}
+	s.moved = append(s.moved, name)
+	return nil
+}
+
+func (s *swap) abort(cause error) error {
+	set := make(map[string]bool, len(s.moved))
+	for _, name := range s.moved {
+		set[name] = true
+	}
+	var stuck []string
+	for _, name := range s.placed {
+		if set[name] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.dest, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			stuck = append(stuck, name)
+		}
+	}
+	for i := len(s.moved) - 1; i >= 0; i-- {
+		name := s.moved[i]
+		if err := renameFile(filepath.Join(s.aside, name), filepath.Join(s.dest, name)); err != nil {
+			stuck = append(stuck, name)
+		}
+	}
+	syncDir(s.dest)
+	if len(stuck) == 0 {
+		_ = os.RemoveAll(s.aside)
+		return fmt.Errorf("%w (nothing was replaced: every previous file is back in place)", cause)
+	}
+	sort.Strings(stuck)
+	return fmt.Errorf("%w; rolling the restore back failed for %s, so %s is left half-replaced: "+
+		"the previous files are intact in %s — stop every munin process, move them back into %s by hand, "+
+		"then retry", cause, strings.Join(stuck, ", "), s.dest, s.aside, s.dest)
+}
+
+func checkReplaceable(destDir string, names []string) error {
+	for _, base := range names {
+		path := filepath.Join(destDir, base)
+		if err := regularOrAbsent(path); err != nil {
+			return fmt.Errorf("refusing to restore over %s: %w", base, err)
+		}
+		for _, suffix := range []string{lockSuffix, wantSuffix} {
+			if err := regularOrAbsent(path + suffix); err != nil {
+				return fmt.Errorf("refusing to restore over %s: %w (that sidecar is how a munin "+
+					"process still holding the database is detected, so restoring now could "+
+					"overwrite a database in use)", base, err)
+			}
+		}
+	}
+	return nil
+}
+
+func regularOrAbsent(path string) error {
+	st, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (%s)", filepath.Base(path), st.Mode().Type())
 	}
 	return nil
 }
 
 func checkUnheld(ctx context.Context, destDir string, names []string) error {
 	for _, base := range names {
-		if !strings.EqualFold(filepath.Ext(base), dbExt) {
-			continue
-		}
 		path := filepath.Join(destDir, base)
-		if _, err := os.Stat(path); err != nil && !hasWAL(path) {
+		db, err := isDatabase(path)
+		if err != nil || !db {
 			continue
 		}
 		h := duckdb.NewHandle(path, "", duckdb.Options{Timeout: lockTimeout})
-		err := h.Ensure(ctx)
+		err = h.Ensure(ctx)
 		_ = h.Close()
-		if err != nil && held(err) {
+		if held(err) {
 			return fmt.Errorf("refusing to restore over %s: %w "+
 				"(stop the munin daemon and any other munin process, then retry)", base, err)
 		}

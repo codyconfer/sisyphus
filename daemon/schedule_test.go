@@ -272,3 +272,202 @@ func TestScheduleLogsFailuresWithoutHook(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleResetsFailureStreakOnSuccess(t *testing.T) {
+	const interval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	boom := errors.New("duckdb lock")
+	var mu sync.Mutex
+	var gotFails []int
+	var gotDelays []time.Duration
+	var attempt atomic.Int32
+	var runs atomic.Int32
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = Schedule(ctx, interval, ScheduleJob{
+			Name: "flappy",
+			Next: func(context.Context, time.Time) (Due, error) {
+				switch attempt.Add(1) {
+				case 1, 2:
+					return Due{}, boom
+				case 3:
+					return Due{Ready: true}, nil
+				default:
+					return Due{}, boom
+				}
+			},
+			Run: func(context.Context) error {
+				runs.Add(1)
+				return nil
+			},
+			OnError: func(_ error, fails int, retryIn time.Duration) {
+				mu.Lock()
+				gotFails = append(gotFails, fails)
+				gotDelays = append(gotDelays, retryIn)
+				n := len(gotFails)
+				mu.Unlock()
+				if n >= 3 {
+					cancel()
+				}
+			},
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Schedule did not return after cancel")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if runs.Load() != 1 {
+		t.Fatalf("Run calls = %d, want 1", runs.Load())
+	}
+	wantFails := []int{1, 2, 1}
+	if len(gotFails) != len(wantFails) {
+		t.Fatalf("fails = %v, want %v", gotFails, wantFails)
+	}
+	for i, want := range wantFails {
+		if gotFails[i] != want {
+			t.Fatalf("fails = %v, want %v: a success must clear the streak", gotFails, wantFails)
+		}
+	}
+	if gotDelays[2] != interval {
+		t.Fatalf("retryIn after the success = %v, want %v: backoff must restart from interval", gotDelays[2], interval)
+	}
+}
+
+func TestScheduleReportsThroughInjectedLogger(t *testing.T) {
+	const interval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var fallback bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&fallback, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	var mu sync.Mutex
+	var host bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&syncWriter{mu: &mu, buf: &host}, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = Schedule(ctx, interval, ScheduleJob{
+			Name:   "oauth-source",
+			Logger: logger,
+			Next: func(context.Context, time.Time) (Due, error) {
+				if calls.Add(1) >= 2 {
+					cancel()
+				}
+				return Due{}, errors.New("token expired")
+			},
+			Run: func(context.Context) error { return nil },
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Schedule did not return after cancel")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	out := host.String()
+	for _, want := range []string{"scheduled job failed", "oauth-source", "token expired", "retry_in"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("injected logger output %q missing %q", out, want)
+		}
+	}
+	if fallback.Len() != 0 {
+		t.Fatalf("slog.Default also got %q: an injected logger must take over reporting", fallback.String())
+	}
+}
+
+type syncWriter struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+}
+
+func (w *syncWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func TestScheduleDoesNotReportShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var reports atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = Schedule(ctx, 10*time.Millisecond, ScheduleJob{
+			Name: "shutting-down",
+			Next: func(c context.Context, _ time.Time) (Due, error) {
+				cancel()
+				return Due{}, c.Err()
+			},
+			Run: func(context.Context) error { return nil },
+			OnError: func(error, int, time.Duration) {
+				reports.Add(1)
+			},
+		})
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Schedule did not return after cancel")
+	}
+	if n := reports.Load(); n != 0 {
+		t.Fatalf("failure reports during shutdown = %d, want 0", n)
+	}
+}
+
+func TestScheduleReportsJobOwnDeadline(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reported := make(chan error, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = Schedule(ctx, 10*time.Millisecond, ScheduleJob{
+			Name: "slow-source",
+			Next: func(parent context.Context, _ time.Time) (Due, error) {
+				own, stop := context.WithTimeout(parent, time.Millisecond)
+				defer stop()
+				<-own.Done()
+				return Due{}, own.Err()
+			},
+			Run: func(context.Context) error { return nil },
+			OnError: func(err error, _ int, _ time.Duration) {
+				select {
+				case reported <- err:
+				default:
+				}
+				cancel()
+			},
+		})
+	}()
+	select {
+	case err := <-reported:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("reported err = %v, want %v", err, context.DeadlineExceeded)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a job's own timeout must still be reported as a failure")
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Schedule did not return after cancel")
+	}
+}

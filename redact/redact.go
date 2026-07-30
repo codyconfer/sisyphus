@@ -3,6 +3,7 @@ package redact
 import (
 	"encoding/json"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -80,58 +81,84 @@ func Line(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-var secretTerms = []string{
-	"secret", "password", "passwd", "passphrase", "pwd",
-	"token", "apikey", "api_key", "accesskey", "access_key",
-	"private_key", "privatekey", "credential", "bearer",
-	"cookie", "session", "signature", "salt", "otp", "passcode",
-	"webhook", "authorization",
+var wordTerms = []string{
+	"secret", "password", "passwd", "passphrase", "passcode",
+	"token", "apikey", "accesskey", "privatekey", "credential",
+	"bearer", "cookie", "session", "signature", "webhook",
+	"authorization", "authorisation",
 }
 
-var selectorSuffixes = []string{"_env", "_id", "_backend", "_name"}
-
-var separators = strings.NewReplacer("_", "", "-", "", " ", "")
-
-func normalizeKey(k string) string {
-	return separators.Replace(strings.ToLower(strings.TrimSpace(k)))
+var exactTerms = map[string]struct{}{
+	"key": {}, "keys": {},
+	"pwd": {}, "pwds": {},
+	"otp": {}, "otps": {},
+	"salt": {}, "salts": {},
 }
 
-var (
-	normalizedTerms    = normalizeAll(secretTerms)
-	normalizedSuffixes = normalizeAll(selectorSuffixes)
-)
+var fusedTerms = []string{"passphrase", "webhook"}
 
-func normalizeAll(in []string) []string {
-	out := make([]string, 0, len(in))
-	seen := make(map[string]struct{}, len(in))
-	for _, s := range in {
-		n := normalizeKey(s)
-		if n == "" {
-			continue
-		}
-		if _, dup := seen[n]; dup {
-			continue
-		}
-		seen[n] = struct{}{}
-		out = append(out, n)
-	}
-	return out
+var selectorSegments = map[string]struct{}{
+	"env": {}, "id": {}, "backend": {}, "service": {}, "name": {},
 }
 
-func Key(k string) bool {
-	n := normalizeKey(k)
-	if n == "" || n == "id" {
-		return false
+var selectorSubjects = map[string]struct{}{
+	"secret": {}, "secrets": {},
+	"token": {}, "tokens": {},
+}
+
+func segments(k string) []string {
+	return strings.FieldsFunc(strings.ToLower(k), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+}
+
+func secretSegment(seg string) bool {
+	if _, ok := exactTerms[seg]; ok {
+		return true
 	}
-	for _, suffix := range normalizedSuffixes {
-		if strings.HasSuffix(n, suffix) {
-			return false
-		}
-	}
-	for _, term := range normalizedTerms {
-		if strings.Contains(n, term) {
+	for _, term := range wordTerms {
+		if strings.Contains(seg, term) {
 			return true
 		}
 	}
 	return false
+}
+
+func fusedSecret(segs []string) bool {
+	if len(segs) < 2 {
+		return false
+	}
+	joined := strings.Join(segs, "")
+	for _, term := range fusedTerms {
+		if strings.Contains(joined, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func Key(k string) bool {
+	segs := segments(k)
+	if len(segs) == 0 {
+		return false
+	}
+
+	matched, hard := false, false
+	for _, seg := range segs {
+		if !secretSegment(seg) {
+			continue
+		}
+		matched = true
+		if _, soft := selectorSubjects[seg]; !soft {
+			hard = true
+		}
+	}
+	if !matched {
+		return fusedSecret(segs)
+	}
+	if hard || len(segs) < 2 {
+		return true
+	}
+	_, exempt := selectorSegments[segs[len(segs)-1]]
+	return !exempt
 }

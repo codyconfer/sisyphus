@@ -59,11 +59,16 @@ func formatOf(name string) string {
 type Option func(*parseOptions)
 
 type parseOptions struct {
-	envKeyMapper func(name string) []string
+	envKeyMapper   func(name string) []string
+	envSectionWarn func(name string, section []string)
 }
 
 func WithEnvKeyMapper(fn func(name string) []string) Option {
 	return func(o *parseOptions) { o.envKeyMapper = fn }
+}
+
+func WithEnvSectionWarning(fn func(name string, section []string)) Option {
+	return func(o *parseOptions) { o.envSectionWarn = fn }
 }
 
 func ParseInto(target any, raw []byte, format, envPrefix string, opts ...Option) error {
@@ -84,7 +89,7 @@ func ParseInto(target any, raw []byte, format, envPrefix string, opts ...Option)
 		}
 	}
 	if envPrefix != "" {
-		if err := loadEnvOverrides(k, target, envPrefix, o.envKeyMapper); err != nil {
+		if err := loadEnvOverrides(k, target, envPrefix, &o); err != nil {
 			return err
 		}
 	}
@@ -94,7 +99,8 @@ func ParseInto(target any, raw []byte, format, envPrefix string, opts ...Option)
 	return nil
 }
 
-func loadEnvOverrides(k *koanf.Koanf, target any, prefix string, mapper func(string) []string) error {
+func loadEnvOverrides(k *koanf.Koanf, target any, prefix string, o *parseOptions) error {
+	mapper := o.envKeyMapper
 	values := map[string]string{}
 	names := []string{}
 	for _, entry := range os.Environ() {
@@ -124,12 +130,19 @@ func loadEnvOverrides(k *koanf.Koanf, target any, prefix string, mapper func(str
 	overrides := map[string]any{}
 	for _, name := range names {
 		var path []string
+		settable := true
 		if mapper != nil {
 			path = mapper(name)
 		} else {
-			path = schema.resolve(envTokens(strings.TrimPrefix(name, prefix)))
+			path, settable = schema.resolve(envTokens(strings.TrimPrefix(name, prefix)))
 		}
 		if len(path) == 0 {
+			continue
+		}
+		if !settable {
+			if o.envSectionWarn != nil {
+				o.envSectionWarn(name, path)
+			}
 			continue
 		}
 		setEnvPath(overrides, path, values[name])
@@ -179,7 +192,7 @@ type envNode struct {
 
 const envMaxDepth = 12
 
-var envSeparators = strings.NewReplacer("_", "", "-", "", ".", "", " ", "")
+var envSeparators = strings.NewReplacer("_", "", "-", "", ".", "", "+", "", " ", "")
 
 func normalizeEnvKey(s string) string {
 	return envSeparators.Replace(strings.ToLower(s))
@@ -267,16 +280,17 @@ func addStructFields(n *envNode, t reflect.Type, v reflect.Value, existing map[s
 		if v.IsValid() && v.Kind() == reflect.Struct {
 			fv = v.Field(i)
 		}
-		if name == "" {
-			if squash {
-				ft := f.Type
-				for ft.Kind() == reflect.Pointer {
-					ft = ft.Elem()
-				}
-				if ft.Kind() == reflect.Struct && depth <= envMaxDepth {
-					addStructFields(n, ft, derefValue(fv), existing, depth)
-				}
+		if squash {
+			ft := f.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
 			}
+			if ft.Kind() == reflect.Struct && depth <= envMaxDepth {
+				addStructFields(n, ft, derefValue(fv), existing, depth)
+			}
+			continue
+		}
+		if name == "" {
 			continue
 		}
 		child := buildEnvNode(f.Type, fv, childMap(existing, name), depth+1)
@@ -335,22 +349,30 @@ func (n *envNode) leaf() bool {
 	return n == nil || (len(n.children) == 0 && !n.dynamic)
 }
 
-func (n *envNode) resolve(tokens []string) []string {
+func (n *envNode) resolve(tokens []string) (path []string, settable bool) {
 	if n == nil {
-		return nil
+		return nil, false
 	}
 	if len(tokens) == 0 {
-		return []string{}
+		return []string{}, n.leaf()
 	}
+	var section []string
 	for i := len(tokens); i >= 1; i-- {
 		for _, name := range n.match(tokens[:i]) {
-			if rest := n.children[name].resolve(tokens[i:]); rest != nil {
-				return append([]string{name}, rest...)
+			rest, ok := n.children[name].resolve(tokens[i:])
+			if rest == nil {
+				continue
+			}
+			if ok {
+				return append([]string{name}, rest...), true
+			}
+			if section == nil {
+				section = append([]string{name}, rest...)
 			}
 		}
 	}
 	if !n.dynamic {
-		return nil
+		return section, false
 	}
 	for i := len(tokens); i >= 1; i-- {
 		want := normalizeEnvKey(strings.Join(tokens[:i], ""))
@@ -358,15 +380,25 @@ func (n *envNode) resolve(tokens []string) []string {
 			if normalizeEnvKey(key) != want {
 				continue
 			}
-			if rest := n.dynamicVal.resolve(tokens[i:]); rest != nil {
-				return append([]string{key}, rest...)
+			rest, ok := n.dynamicVal.resolve(tokens[i:])
+			if rest == nil {
+				continue
+			}
+			if ok {
+				return append([]string{key}, rest...), true
+			}
+			if section == nil {
+				section = append([]string{key}, rest...)
 			}
 		}
 	}
-	if n.dynamicVal.leaf() {
-		return []string{strings.Join(tokens, ".")}
+	if section != nil {
+		return section, false
 	}
-	return nil
+	if n.dynamicVal.leaf() {
+		return []string{strings.Join(tokens, ".")}, true
+	}
+	return nil, false
 }
 
 func (n *envNode) match(tokens []string) []string {
