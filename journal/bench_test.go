@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const benchHoldBudget = 6 * time.Second
+const benchHoldBudget = time.Hour
 
 var benchBase = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
@@ -44,7 +44,7 @@ func benchRun(count int) Run {
 
 func openBenchStore(b *testing.B, dir string) *Store {
 	b.Helper()
-	s, err := Open(context.Background(), filepath.Join(dir, "journal.duckdb"))
+	s, err := Open(context.Background(), filepath.Join(dir, "journal.duckdb"), WithMaxHold(benchHoldBudget))
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}

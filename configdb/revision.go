@@ -1,20 +1,21 @@
 package configdb
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	sconfig "github.com/codyconfer/sisyphus/config"
 )
 
 const revSuffix = ".gen"
 
-// Revision reports a token that changes whenever this store is written. It
-// reads a small marker file rather than the database, so a watcher can poll it
-// without taking the database lock away from whoever is working.
-//
-// Reports false when the store has never been written, or when the marker is
-// missing or unreadable.
+var ErrRevisionMarker = errors.New("change committed but revision marker not updated")
+
 func (s *Store) Revision() (string, bool) {
 	if s == nil || s.h == nil {
 		return "", false
@@ -33,13 +34,12 @@ func (s *Store) Revision() (string, bool) {
 func (s *Store) bump(change string) error {
 	path := s.h.Path() + revSuffix
 	rev := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + Hash("rev", []byte(change))[:12]
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(rev+"\n"), 0o600); err != nil {
-		return err
+	dir, file := filepath.Split(path)
+	if dir == "" {
+		dir = "."
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
+	if _, err := sconfig.WriteItem(dir, file, []byte(rev+"\n")); err != nil {
+		return fmt.Errorf("%w: %w", ErrRevisionMarker, err)
 	}
 	return nil
 }

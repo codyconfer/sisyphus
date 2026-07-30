@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 type Store interface {
@@ -16,6 +17,26 @@ var (
 	bwAvailable = bwConfigured
 	opAvailable = opConfigured
 )
+
+var backends = []string{"auto", "bitwarden", "bw", "1password", "op", "keyring"}
+
+func Backends() []string {
+	out := make([]string, len(backends))
+	copy(out, backends)
+	return out
+}
+
+func ValidBackend(backend string) bool {
+	if backend == "" {
+		return true
+	}
+	for _, b := range backends {
+		if backend == b {
+			return true
+		}
+	}
+	return false
+}
 
 func Resolve(ctx context.Context, backend, service string) (Store, error) {
 	if err := ctx.Err(); err != nil {
@@ -44,7 +65,7 @@ func Resolve(ctx context.Context, backend, service string) (Store, error) {
 			return newKeyringStore(service), nil
 		}
 	default:
-		return nil, fmt.Errorf("unknown secret backend %q (want auto, bitwarden, 1password, or keyring)", backend)
+		return nil, fmt.Errorf("unknown secret backend %q (want one of: %s)", backend, strings.Join(Backends(), ", "))
 	}
 }
 

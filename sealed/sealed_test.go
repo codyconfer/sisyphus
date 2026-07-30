@@ -2,6 +2,7 @@ package sealed
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -104,15 +105,100 @@ func TestRefreshTokenOutlivesAccessTokenExpiry(t *testing.T) {
 	}
 }
 
-func TestExpiredEntryWithoutRefreshTokenIsSwept(t *testing.T) {
+// TestExpiredEntryWithoutRefreshTokenSurvivesRead pins the Expiry/TTL split: an
+// expired access token with nothing to refresh it is still a record worth
+// keeping, because its Scope is what a caller needs to re-request the same
+// permissions. Erasing it on read turns "expired" into "never logged in".
+func TestExpiredEntryWithoutRefreshTokenSurvivesRead(t *testing.T) {
 	ctx := context.Background()
 	s := openTemp(t)
-	e := Entry{AccessToken: "stale", Expiry: time.Now().Add(-time.Hour)}
-	if err := s.Put(ctx, "slack", e); err != nil {
+	want := Entry{AccessToken: "stale", Scope: "channels:read", Expiry: time.Now().Add(-time.Hour)}
+	if err := s.Put(ctx, "slack", want); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.Get(ctx, "slack"); ok || err != nil {
-		t.Fatalf("Get = ok %v err %v, want a miss for an expired entry with no refresh token", ok, err)
+	for i, when := range []string{"first", "second"} {
+		got, ok, err := s.Get(ctx, "slack")
+		if err != nil || !ok {
+			t.Fatalf("%s Get = ok %v err %v, want the expired entry back", when, ok, err)
+		}
+		if got.Scope != want.Scope {
+			t.Fatalf("%s Get Scope = %q, want %q preserved so permissions can be re-requested", when, got.Scope, want.Scope)
+		}
+		if !got.Expiry.Equal(want.Expiry) {
+			t.Fatalf("%s Get Expiry = %v, want %v", when, got.Expiry, want.Expiry)
+		}
+		if i == 0 {
+			if e, ok, err := s.kv.Get(ctx, "tokens", "slack"); !ok || err != nil || e.Value == "" {
+				t.Fatalf("row deleted by the first read: ok %v err %v", ok, err)
+			}
+		}
+	}
+}
+
+// TestTTLDiscardsTheRecord is the other half: TTL, and only TTL, is what makes
+// a row collectable.
+func TestTTLDiscardsTheRecord(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if err := s.Put(ctx, "ephemeral", Entry{AccessToken: "a", TTL: time.Now().Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.Get(ctx, "ephemeral"); ok || err != nil {
+		t.Fatalf("Get = ok %v err %v, want a miss for a record past its TTL", ok, err)
+	}
+	future := Entry{AccessToken: "a", TTL: time.Now().Add(time.Hour)}
+	if err := s.Put(ctx, "later", future); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Get(ctx, "later")
+	if err != nil || !ok {
+		t.Fatalf("Get = ok %v err %v, want a record still inside its TTL", ok, err)
+	}
+	if !got.TTL.Equal(future.TTL) {
+		t.Fatalf("TTL = %v, want %v round-tripped in the payload", got.TTL, future.TTL)
+	}
+}
+
+// TestPlaintextValueIsRejected covers the removed cleartext fallback: a row that
+// does not authenticate under the current key must never be parsed as JSON,
+// otherwise anyone who can write the database can substitute a credential.
+func TestPlaintextValueIsRejected(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if err := s.kv.Put(ctx, "tokens", "github", `{"access_token":"forged","scope":"repo"}`, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Get(ctx, "github")
+	if ok || got.AccessToken != "" {
+		t.Fatalf("Get accepted a plaintext row: %+v ok=%v", got, ok)
+	}
+	if !errors.Is(err, ErrUndecodable) {
+		t.Fatalf("Get error = %v, want ErrUndecodable", err)
+	}
+}
+
+// TestTamperedCiphertextIsReported makes sure the GCM authentication failure
+// itself surfaces rather than being swallowed.
+func TestTamperedCiphertextIsReported(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if err := s.Put(ctx, "github", Entry{AccessToken: "real"}); err != nil {
+		t.Fatal(err)
+	}
+	e, ok, err := s.kv.Get(ctx, "tokens", "github")
+	if err != nil || !ok {
+		t.Fatalf("raw get: ok=%v err=%v", ok, err)
+	}
+	raw, err := base64.StdEncoding.DecodeString(e.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-1] ^= 0xff
+	if err := s.kv.Put(ctx, "tokens", "github", base64.StdEncoding.EncodeToString(raw), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.Get(ctx, "github"); ok || !errors.Is(err, ErrUndecodable) {
+		t.Fatalf("Get = ok %v err %v, want ErrUndecodable for a failed MAC", ok, err)
 	}
 }
 

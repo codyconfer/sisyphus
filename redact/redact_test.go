@@ -122,6 +122,86 @@ func TestLineKeepsBackupSelectorsUsable(t *testing.T) {
 	}
 }
 
+func TestKeyHyphenatedAndWebhookSpellings(t *testing.T) {
+	secretKeys := []string{
+		"api-key", "API-KEY", "x-api-key", "access-key", "private-key",
+		"client-secret", "auth-token", "access-token", "pass-phrase",
+		"webhook", "webhook_url", "webhook-url", "slack_webhook",
+		"incoming-webhook-url", "authorization", "Authorization",
+		"github.webhook_url", "  api-key  ",
+	}
+	for _, k := range secretKeys {
+		if !Key(k) {
+			t.Errorf("Key(%q) = false, want true: hyphenated and webhook keys carry secrets", k)
+		}
+	}
+
+	notSecret := []string{
+		"secret_backend", "secret-backend", "secret_name", "secret-name",
+		"token_env", "token-env", "webhook_name", "webhook_id",
+		"oauth_client_id", "oauth-client-id", "id", "name", "output",
+		"api-url", "keybinds", "keyring", "theme",
+	}
+	for _, k := range notSecret {
+		if Key(k) {
+			t.Errorf("Key(%q) = true, want false: selector and plain-config keys must stay readable", k)
+		}
+	}
+
+	if !Key("oauth_client_secret") || !Key("oauth-client-secret") {
+		t.Error("oauth_client_secret must stay masked in both spellings")
+	}
+}
+
+func TestConfigMasksHyphenatedAndWebhookKeys(t *testing.T) {
+	in := []byte(strings.Join([]string{
+		"github:",
+		"  api-key: DASHKEY",
+		"  api_url: https://api.github.com",
+		"slack:",
+		"  webhook_url: https://hooks.slack.com/services/T/B/XYZ",
+		"  webhook-url: https://hooks.slack.com/services/T/B/ABC",
+		"backup:",
+		"  secret_backend: keyring",
+		"  secret_name: munin-backup-key",
+		"google:",
+		"  oauth_client_secret: super-secret-value",
+		"",
+	}, "\n"))
+	got := Config(in, "yaml")
+
+	for _, leak := range []string{"DASHKEY", "T/B/XYZ", "T/B/ABC", "super-secret-value"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("%q leaked through redaction:\n%s", leak, got)
+		}
+	}
+	for _, keep := range []string{"https://api.github.com", "keyring", "munin-backup-key"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("%q must survive redaction:\n%s", keep, got)
+		}
+	}
+}
+
+func TestLineMasksHyphenatedAndWebhookKeys(t *testing.T) {
+	in := strings.Join([]string{
+		"api-key: DASHKEY",
+		"webhook_url: https://hooks.slack.com/services/T/B/XYZ",
+		"secret_backend: keyring",
+		"secret_name: munin-backup-key",
+		"oauth_client_secret: super-secret-value",
+	}, "\n")
+	got := Line(in)
+
+	for _, leak := range []string{"DASHKEY", "T/B/XYZ", "super-secret-value"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("%q leaked through line redaction:\n%s", leak, got)
+		}
+	}
+	if !strings.Contains(got, "keyring") || !strings.Contains(got, "munin-backup-key") {
+		t.Errorf("selector values must survive line redaction:\n%s", got)
+	}
+}
+
 func TestConfigNonSecretUnchanged(t *testing.T) {
 	in := []byte("output: terminal\ntoken_env: SLACK_TOKEN\n")
 	got := Config(in, "yaml")

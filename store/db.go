@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
 )
@@ -19,11 +20,23 @@ type DB struct {
 
 // Open opens (or creates) a DuckDB database at path, applying schema when
 // non-empty. The file is chmod 0600 and limited to a single writer.
-func Open(ctx context.Context, path, schema string) (*DB, error) {
+type Option func(*duckdb.Options)
+
+func WithIdle(d time.Duration) Option { return func(o *duckdb.Options) { o.Idle = d } }
+
+func WithTimeout(d time.Duration) Option { return func(o *duckdb.Options) { o.Timeout = d } }
+
+func WithMaxHold(d time.Duration) Option { return func(o *duckdb.Options) { o.MaxHold = d } }
+
+func Open(ctx context.Context, path, schema string, opts ...Option) (*DB, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+	o := duckdb.Options{Unavailable: ErrUnavailable}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	h := duckdb.NewHandle(path, schema, o)
 	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}

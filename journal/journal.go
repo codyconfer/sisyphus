@@ -6,14 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
 )
 
-const schema = `
-CREATE SEQUENCE IF NOT EXISTS journal_run_seq;
-CREATE TABLE IF NOT EXISTS runs (
+const runsColumns = `
   id          BIGINT PRIMARY KEY DEFAULT nextval('journal_run_seq'),
   parent_id   BIGINT,
   kind        VARCHAR,
@@ -23,17 +22,28 @@ CREATE TABLE IF NOT EXISTS runs (
   count       INTEGER,
   error       VARCHAR,
   attrs       VARCHAR
-);
-CREATE SEQUENCE IF NOT EXISTS journal_rec_seq;
-CREATE TABLE IF NOT EXISTS records (
+`
+
+const recordsColumns = `
   id     BIGINT PRIMARY KEY DEFAULT nextval('journal_rec_seq'),
   run_id BIGINT,
   ts     TIMESTAMP,
   attrs  VARCHAR
-);
 `
 
-// ErrUnavailable is returned when a method is called on a nil or closed store.
+const schema = `
+CREATE SEQUENCE IF NOT EXISTS journal_run_seq;
+CREATE TABLE IF NOT EXISTS runs (` + runsColumns + `);
+CREATE SEQUENCE IF NOT EXISTS journal_rec_seq;
+CREATE TABLE IF NOT EXISTS records (` + recordsColumns + `);
+`
+
+const recordChunk = 200
+
+const recordInsertPrefix = `INSERT INTO records (run_id, ts, attrs) VALUES `
+
+var fullRecordInsert = recordInsert(recordChunk)
+
 var ErrUnavailable = errors.New("journal store unavailable")
 
 type Run struct {
@@ -53,7 +63,6 @@ type Record struct {
 	Attrs map[string]string
 }
 
-// Result is a tabular ad-hoc query response.
 type Result struct {
 	Columns []string
 	Rows    [][]string
@@ -63,8 +72,20 @@ type Store struct {
 	h *duckdb.Handle
 }
 
-func Open(ctx context.Context, path string) (*Store, error) {
-	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+type Option func(*duckdb.Options)
+
+func WithIdle(d time.Duration) Option { return func(o *duckdb.Options) { o.Idle = d } }
+
+func WithTimeout(d time.Duration) Option { return func(o *duckdb.Options) { o.Timeout = d } }
+
+func WithMaxHold(d time.Duration) Option { return func(o *duckdb.Options) { o.MaxHold = d } }
+
+func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
+	o := duckdb.Options{Unavailable: ErrUnavailable}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	h := duckdb.NewHandle(path, schema, o)
 	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
@@ -130,13 +151,8 @@ func (s *Store) Add(ctx context.Context, run Run, records []Record) (int64, erro
 		).Scan(&id); err != nil {
 			return err
 		}
-		for _, r := range records {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO records (run_id, ts, attrs) VALUES (?, ?, ?)`,
-				id, duckdb.NullTime(r.Ts), marshalAttrs(r.Attrs),
-			); err != nil {
-				return err
-			}
+		if err := insertRecords(ctx, tx, id, records); err != nil {
+			return err
 		}
 		return tx.Commit()
 	})
@@ -146,9 +162,42 @@ func (s *Store) Add(ctx context.Context, run Run, records []Record) (int64, erro
 	return id, nil
 }
 
-// Delete removes a run, the runs rolled up under it, and every record either
-// holds. Deleting an unknown id is not an error: the outcome the caller asked
-// for — that run is gone — already holds.
+func insertRecords(ctx context.Context, tx *sql.Tx, runID int64, records []Record) error {
+	if len(records) == 0 {
+		return nil
+	}
+	owner := any(runID)
+	args := make([]any, 0, min(len(records), recordChunk)*3)
+	for start := 0; start < len(records); start += recordChunk {
+		chunk := records[start:min(start+recordChunk, len(records))]
+		query := fullRecordInsert
+		if len(chunk) != recordChunk {
+			query = recordInsert(len(chunk))
+		}
+		args = args[:0]
+		for _, r := range chunk {
+			args = append(args, owner, duckdb.NullTime(r.Ts), marshalAttrs(r.Attrs))
+		}
+		if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func recordInsert(rows int) string {
+	var b strings.Builder
+	b.Grow(len(recordInsertPrefix) + rows*len("(?, ?, ?),"))
+	b.WriteString(recordInsertPrefix)
+	for i := range rows {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString("(?, ?, ?)")
+	}
+	return b.String()
+}
+
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	if s == nil || s.h == nil {
 		return ErrUnavailable
@@ -178,6 +227,98 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 		}
 		return tx.Commit()
 	})
+}
+
+const olderThan = `parent_id IS NULL AND started_at < ?`
+
+const beyondNewest = `parent_id IS NULL AND id NOT IN (
+	SELECT id FROM runs WHERE parent_id IS NULL ORDER BY started_at DESC, id DESC LIMIT ?)`
+
+func (s *Store) Prune(ctx context.Context, before time.Time) (int, error) {
+	if s == nil || s.h == nil {
+		return 0, ErrUnavailable
+	}
+	if before.IsZero() {
+		return 0, nil
+	}
+	return s.evict(ctx, olderThan, before)
+}
+
+func (s *Store) Retain(ctx context.Context, maxRuns int) (int, error) {
+	if s == nil || s.h == nil {
+		return 0, ErrUnavailable
+	}
+	if maxRuns <= 0 {
+		return 0, nil
+	}
+	return s.evict(ctx, beyondNewest, maxRuns)
+}
+
+func (s *Store) evict(ctx context.Context, doomed string, arg any) (int, error) {
+	var removed int
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		var doomedRuns int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE `+doomed, arg).Scan(&doomedRuns); err != nil {
+			return err
+		}
+		if doomedRuns == 0 {
+			return nil
+		}
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		for _, st := range evictStatements(doomed) {
+			args := make([]any, st.args)
+			for i := range args {
+				args[i] = arg
+			}
+			if _, err := tx.ExecContext(ctx, st.query, args...); err != nil {
+				return err
+			}
+		}
+		for _, stmt := range compaction {
+			if _, err := tx.ExecContext(ctx, stmt); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		removed = doomedRuns
+		_, err = db.ExecContext(ctx, `CHECKPOINT`)
+		return err
+	})
+	return removed, err
+}
+
+type evictStatement struct {
+	query string
+	args  int
+}
+
+func evictStatements(doomed string) []evictStatement {
+	return []evictStatement{
+		{`DELETE FROM records WHERE run_id IN (
+			SELECT id FROM runs WHERE (` + doomed + `)
+			   OR parent_id IN (SELECT id FROM runs WHERE ` + doomed + `))`, 2},
+		{`DELETE FROM runs WHERE parent_id IN (SELECT id FROM runs WHERE ` + doomed + `)`, 1},
+		{`DELETE FROM runs WHERE ` + doomed, 1},
+	}
+}
+
+var compaction = append(rewriteTable("records", recordsColumns), rewriteTable("runs", runsColumns)...)
+
+func rewriteTable(table, columns string) []string {
+	fresh := table + "_compact"
+	return []string{
+		`DROP TABLE IF EXISTS ` + fresh,
+		`CREATE TABLE ` + fresh + ` (` + columns + `)`,
+		`INSERT INTO ` + fresh + ` SELECT * FROM ` + table,
+		`DROP TABLE ` + table,
+		`ALTER TABLE ` + fresh + ` RENAME TO ` + table,
+	}
 }
 
 func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
@@ -245,8 +386,6 @@ func (s *Store) Records(ctx context.Context, runID int64) ([]Record, error) {
 	return out, nil
 }
 
-// Query runs an ad-hoc SQL statement against the open journal and returns a
-// string table. Intended for read-only inspection UIs.
 func (s *Store) Query(ctx context.Context, query string, args ...any) (Result, error) {
 	if s == nil || s.h == nil {
 		return Result{}, ErrUnavailable

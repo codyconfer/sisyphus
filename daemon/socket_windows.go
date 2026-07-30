@@ -4,20 +4,21 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
+	"os"
 	"os/user"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 )
 
+var ErrInUse = errors.New("address already in use")
+
 const dialProbeTimeout = 200 * time.Millisecond
 
-// DefaultPipePrefix is used when Listen/Dial/IsListening are called with an
-// empty prefix. Apps should pass their own prefix (e.g. "munin") so pipe names
-// stay stable and this library carries no app literals.
 const DefaultPipePrefix = "sisyphus"
 
 func pipeName(prefix, name string) string {
@@ -36,9 +37,16 @@ func ownerOnlySDDL() string {
 	return "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)"
 }
 
-// Listen opens a Windows named pipe derived from prefix+name.
 func Listen(prefix, name string) (net.Listener, error) {
-	return winio.ListenPipe(pipeName(prefix, name), &winio.PipeConfig{SecurityDescriptor: ownerOnlySDDL()})
+	pipe := pipeName(prefix, name)
+	ln, err := winio.ListenPipe(pipe, &winio.PipeConfig{SecurityDescriptor: ownerOnlySDDL()})
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("%w: %s: %w", ErrInUse, pipe, err)
+		}
+		return nil, err
+	}
+	return ln, nil
 }
 
 func dialConn(ctx context.Context, prefix, name string) (net.Conn, error) {

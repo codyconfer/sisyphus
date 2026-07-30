@@ -85,22 +85,51 @@ var secretTerms = []string{
 	"token", "apikey", "api_key", "accesskey", "access_key",
 	"private_key", "privatekey", "credential", "bearer",
 	"cookie", "session", "signature", "salt", "otp", "passcode",
+	"webhook", "authorization",
 }
 
 var selectorSuffixes = []string{"_env", "_id", "_backend", "_name"}
 
+var separators = strings.NewReplacer("_", "", "-", "", " ", "")
+
+func normalizeKey(k string) string {
+	return separators.Replace(strings.ToLower(strings.TrimSpace(k)))
+}
+
+var (
+	normalizedTerms    = normalizeAll(secretTerms)
+	normalizedSuffixes = normalizeAll(selectorSuffixes)
+)
+
+func normalizeAll(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, s := range in {
+		n := normalizeKey(s)
+		if n == "" {
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		out = append(out, n)
+	}
+	return out
+}
+
 func Key(k string) bool {
-	k = strings.ToLower(strings.TrimSpace(k))
-	if k == "id" {
+	n := normalizeKey(k)
+	if n == "" || n == "id" {
 		return false
 	}
-	for _, suffix := range selectorSuffixes {
-		if strings.HasSuffix(k, suffix) {
+	for _, suffix := range normalizedSuffixes {
+		if strings.HasSuffix(n, suffix) {
 			return false
 		}
 	}
-	for _, term := range secretTerms {
-		if strings.Contains(k, term) {
+	for _, term := range normalizedTerms {
+		if strings.Contains(n, term) {
 			return true
 		}
 	}

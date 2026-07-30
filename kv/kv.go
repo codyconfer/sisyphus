@@ -33,8 +33,20 @@ type Store struct {
 	h *duckdb.Handle
 }
 
-func Open(ctx context.Context, path string) (*Store, error) {
-	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+type Option func(*duckdb.Options)
+
+func WithIdle(d time.Duration) Option { return func(o *duckdb.Options) { o.Idle = d } }
+
+func WithTimeout(d time.Duration) Option { return func(o *duckdb.Options) { o.Timeout = d } }
+
+func WithMaxHold(d time.Duration) Option { return func(o *duckdb.Options) { o.MaxHold = d } }
+
+func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
+	o := duckdb.Options{Unavailable: ErrUnavailable}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	h := duckdb.NewHandle(path, schema, o)
 	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
@@ -173,6 +185,76 @@ func (s *Store) Namespaces(ctx context.Context) ([]string, error) {
 				return err
 			}
 			found = append(found, ns)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		out = found
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// NamespaceStat summarizes one namespace.
+type NamespaceStat struct {
+	Namespace string
+	// Entries counts live rows: those with no expiry, or an expiry still ahead.
+	Entries int64
+	// Expired counts rows past their expiry that are still on disk. They are
+	// excluded from Entries, Fresh, Oldest and Newest, and disappear on the next
+	// Sweep, List or Namespaces call.
+	Expired int64
+	// Fresh counts live rows updated within the window passed to Stats. It is 0
+	// when that window is not positive.
+	Fresh int64
+	// Oldest and Newest bracket updated_at across live rows, zero when there are
+	// none.
+	Oldest time.Time
+	Newest time.Time
+}
+
+// Stats summarizes every namespace holding rows, ordered by name, in one
+// read-only aggregate. Unlike List and Namespaces it neither sweeps nor writes,
+// so a stats panel costs a single handle acquisition however many namespaces
+// exist. fresh, when positive, is the window that NamespaceStat.Fresh counts
+// against updated_at; pass 0 to skip it.
+func (s *Store) Stats(ctx context.Context, fresh time.Duration) ([]NamespaceStat, error) {
+	if s == nil || s.h == nil {
+		return nil, ErrUnavailable
+	}
+	var out []NamespaceStat
+	err := s.h.Do(ctx, func(db *sql.DB) error {
+		now := time.Now()
+		cutoff := now.Add(-fresh)
+		rows, err := db.QueryContext(ctx, `
+SELECT namespace,
+       count(*) FILTER (WHERE live)                     AS entries,
+       count(*) FILTER (WHERE NOT live)                 AS expired,
+       count(*) FILTER (WHERE live AND updated_at >= ?) AS fresh,
+       min(updated_at) FILTER (WHERE live)              AS oldest,
+       max(updated_at) FILTER (WHERE live)              AS newest
+FROM (SELECT namespace, updated_at, (expiry IS NULL OR expiry > ?) AS live FROM kv)
+GROUP BY namespace
+ORDER BY namespace`, cutoff, now)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		var found []NamespaceStat
+		for rows.Next() {
+			var st NamespaceStat
+			var oldest, newest sql.NullTime
+			if err := rows.Scan(&st.Namespace, &st.Entries, &st.Expired, &st.Fresh, &oldest, &newest); err != nil {
+				return err
+			}
+			st.Oldest, st.Newest = oldest.Time, newest.Time
+			if fresh <= 0 {
+				st.Fresh = 0
+			}
+			found = append(found, st)
 		}
 		if err := rows.Err(); err != nil {
 			return err

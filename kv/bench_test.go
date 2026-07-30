@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const benchHoldBudget = 6 * time.Second
+const benchHoldBudget = time.Hour
 
 const benchValue = `{"kind":"pull_request","title":"Fix the flaky integration test in the audit path",` +
 	`"repo":"codyconfer/munin","author":"codyconfer","url":"https://github.com/codyconfer/munin/pull/1234"}`
@@ -30,7 +30,7 @@ func newBenchHold(b *testing.B) *benchHold {
 
 func (h *benchHold) open() {
 	h.b.Helper()
-	s, err := Open(context.Background(), filepath.Join(h.dir, "kv.duckdb"))
+	s, err := Open(context.Background(), filepath.Join(h.dir, "kv.duckdb"), WithMaxHold(benchHoldBudget))
 	if err != nil {
 		h.b.Fatalf("Open: %v", err)
 	}

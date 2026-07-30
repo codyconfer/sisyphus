@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -31,7 +32,10 @@ const DefaultTimeout = 5 * time.Second
 // that never announced itself.
 const DefaultMaxHold = 10 * time.Second
 
-const yieldToWaiter = 150 * time.Millisecond
+// yieldToWaiter is how long a Handle stays out of the database after handing it
+// off, long enough for the process it yielded to to take the lock. It is a
+// variable only so tests can widen it.
+var yieldToWaiter = 150 * time.Millisecond
 
 const lockPoll = 10 * time.Millisecond
 
@@ -39,6 +43,48 @@ const lockPoll = 10 * time.Millisecond
 // reopens, so a caller that closed a database to move its files underneath
 // cannot have it reopened by a stray concurrent operation.
 var ErrClosed = errors.New("duckdb: handle closed")
+
+// ErrLocked reports that a database could not be used because another process
+// holds it: either this package's cross-process handoff lock, or DuckDB's own
+// single-writer lock on the file.
+//
+// It marks contention alone — a condition that a retry may clear — and never a
+// corrupt or unreadable file, so callers may treat it as "busy, try later".
+// Every error that carries it keeps its own message; match it with errors.Is
+// rather than by inspecting text. ErrClosed does not imply ErrLocked: a closed
+// Handle is a caller-side lifecycle error, not contention.
+var ErrLocked = errors.New("duckdb: database is locked by another process")
+
+// lockedError tags an error as contention without altering what it says, so
+// existing diagnostics keep naming the file, the holder and the wait.
+type lockedError struct{ err error }
+
+func (e lockedError) Error() string { return e.err.Error() }
+
+func (e lockedError) Unwrap() []error { return []error{e.err, ErrLocked} }
+
+// duckLockMarkers are the diagnostics DuckDB itself produces when its
+// single-writer lock is already taken. DuckDB reports them as plain IO errors,
+// so there is nothing else to match on.
+var duckLockMarkers = [...]string{
+	"Conflicting lock is held",
+	"Could not set lock on file",
+}
+
+// asLocked marks err as ErrLocked when it is DuckDB reporting its own lock
+// conflict. Errors raised by this package are wrapped at their source instead.
+func asLocked(err error) error {
+	if err == nil || errors.Is(err, ErrLocked) {
+		return err
+	}
+	msg := err.Error()
+	for _, marker := range duckLockMarkers {
+		if strings.Contains(msg, marker) {
+			return lockedError{err}
+		}
+	}
+	return err
+}
 
 // Options configures a Handle. The zero value uses DefaultIdle and
 // DefaultTimeout, and reports ErrClosed for use-after-close.
@@ -64,18 +110,21 @@ type Options struct {
 // concurrent one waits for the idle window rather than failing outright.
 type Handle struct {
 	path    string
+	wal     string
 	schema  string
 	idle    time.Duration
 	timeout time.Duration
 	maxHold time.Duration
 	unavail error
 
-	mu     sync.Mutex
-	db     *sql.DB
-	timer  *time.Timer
-	since  time.Time
-	gen    uint64
-	closed bool
+	mu      sync.Mutex
+	db      *sql.DB
+	timer   *time.Timer
+	since   time.Time
+	gen     uint64
+	armed   uint64
+	pending int
+	closed  bool
 }
 
 // NewHandle prepares a Handle for path. The file is not touched until the first
@@ -83,6 +132,7 @@ type Handle struct {
 func NewHandle(path, schema string, opts Options) *Handle {
 	h := &Handle{
 		path:    path,
+		wal:     path + walSuffix,
 		schema:  schema,
 		idle:    opts.Idle,
 		timeout: opts.Timeout,
@@ -130,16 +180,49 @@ func (h *Handle) Do(ctx context.Context, fn func(*sql.DB) error) error {
 	h.disarm()
 	if h.db != nil && (wanted(h.path) || time.Since(h.since) > h.maxHold) {
 		_ = h.shutLocked()
-		time.Sleep(yieldToWaiter)
+		if err := h.yieldLocked(ctx); err != nil {
+			return err
+		}
 	}
 	if h.db == nil {
 		if err := h.openLocked(ctx); err != nil {
 			return err
 		}
 	}
-	err := fn(h.db)
+	err := asLocked(fn(h.db))
+	if walErr := securePerm(h.wal); walErr != nil && err == nil {
+		err = walErr
+	}
 	h.arm()
 	return err
+}
+
+// yieldLocked stays out of the database long enough for the process this Handle
+// just handed off to to take the lock. It is called with h.mu held and returns
+// with it held, but drops it while waiting: holding it would stall every other
+// caller of this Handle for the whole yield, and they are not who the database
+// is being yielded to.
+//
+// Anything may happen while the mutex is down — another Do can reopen the
+// database, the idle timer can close it again, Close can retire the Handle — so
+// nothing observed before the gap survives it.
+func (h *Handle) yieldLocked(ctx context.Context) error {
+	h.mu.Unlock()
+	timer := time.NewTimer(yieldToWaiter)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+	case <-timer.C:
+	}
+	h.mu.Lock()
+	if h.closed {
+		return h.unavail
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	h.disarm()
+	return nil
 }
 
 // Ensure opens the database and immediately releases it, so callers that only
@@ -185,24 +268,37 @@ func (h *Handle) shutLocked() error {
 	return err
 }
 
+// disarm cancels the idle countdown. The timer object is kept for the next arm;
+// pending tracks how many firings are still owed a wakeup, because a timer that
+// has already expired cannot be called off — its goroutine is on its way to the
+// mutex and must be recognised as stale when it arrives.
 func (h *Handle) disarm() {
 	h.gen++
-	if h.timer != nil {
-		h.timer.Stop()
-		h.timer = nil
+	if h.timer != nil && h.timer.Stop() {
+		h.pending--
 	}
 }
 
 func (h *Handle) arm() {
-	gen := h.gen
-	h.timer = time.AfterFunc(h.idle, func() {
-		h.mu.Lock()
-		defer h.mu.Unlock()
-		if h.closed || h.gen != gen {
-			return
-		}
-		_ = h.shutLocked()
-	})
+	h.armed = h.gen
+	if h.timer == nil {
+		h.timer = time.AfterFunc(h.idle, h.onIdle)
+		h.pending++
+		return
+	}
+	if !h.timer.Reset(h.idle) {
+		h.pending++
+	}
+}
+
+func (h *Handle) onIdle() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pending--
+	if h.pending > 0 || h.closed || h.gen != h.armed {
+		return
+	}
+	_ = h.shutLocked()
 }
 
 var locks struct {
@@ -247,7 +343,8 @@ func acquire(ctx context.Context, path string, timeout time.Duration) error {
 		return err
 	}
 	if !queued {
-		return fmt.Errorf("duckdb: timed out queueing for %s (waited %s)", filepath.Base(path), timeout)
+		return lockedError{fmt.Errorf("duckdb: timed out queueing for %s (waited %s)",
+			filepath.Base(path), timeout)}
 	}
 
 	f, err := openSideFile(path, lockSuffix)
@@ -260,8 +357,8 @@ func acquire(ctx context.Context, path string, timeout time.Duration) error {
 		if err != nil {
 			return err
 		}
-		return fmt.Errorf("duckdb: %s is locked by another process%s (waited %s)",
-			filepath.Base(path), holderSuffix(f.Name()), timeout)
+		return lockedError{fmt.Errorf("duckdb: %s is locked by another process%s (waited %s)",
+			filepath.Base(path), holderSuffix(f.Name()), timeout)}
 	}
 
 	locks.mu.Lock()
@@ -304,9 +401,14 @@ const (
 	wantSuffix = ".wait"
 )
 
+// openSideFile opens one of the lock files beside a database, creating it if
+// needed.
+//
+// The explicit 0600 is all the protection these need: a umask can only clear
+// permission bits, so a file created with mode 0600 is never wider than that,
+// whatever the process umask happens to be. Narrowing the umask here — on a
+// path that runs on every operation — bought nothing and mutated global state.
 func openSideFile(path, suffix string) (*os.File, error) {
-	restore := secureUmask()
-	defer restore()
 	f, err := os.OpenFile(path+suffix, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err

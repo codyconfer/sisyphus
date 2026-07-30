@@ -90,6 +90,52 @@ func TestResolveExplicitUnconfigured(t *testing.T) {
 	}
 }
 
+func TestBackendsMatchesResolve(t *testing.T) {
+	defer stub(true, true)()
+
+	got := Backends()
+	for _, want := range []string{"auto", "bitwarden", "bw", "1password", "op", "keyring"} {
+		found := false
+		for _, b := range got {
+			if b == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Backends() = %v, missing %q", got, want)
+		}
+	}
+	for _, b := range got {
+		if _, err := Resolve(context.Background(), b, "svc"); err != nil {
+			t.Errorf("Resolve(%q) = %v, but Backends() advertises it", b, err)
+		}
+		if !ValidBackend(b) {
+			t.Errorf("ValidBackend(%q) = false, but Backends() advertises it", b)
+		}
+	}
+
+	if !ValidBackend("") {
+		t.Error(`ValidBackend("") = false, want true: empty means auto`)
+	}
+	if ValidBackend("nonsense") {
+		t.Error(`ValidBackend("nonsense") = true, want false`)
+	}
+	if _, err := Resolve(context.Background(), "nonsense", ""); err == nil {
+		t.Error("Resolve rejected nothing; unknown backend must error")
+	} else {
+		for _, b := range got {
+			if !strings.Contains(err.Error(), b) {
+				t.Errorf("unknown-backend error %q should list %q", err, b)
+			}
+		}
+	}
+
+	got[0] = "mutated"
+	if Backends()[0] == "mutated" {
+		t.Error("Backends() leaks its internal slice")
+	}
+}
+
 func TestKeyringServiceInjected(t *testing.T) {
 	defer stub(false, false)()
 	s, err := Resolve(context.Background(), "keyring", "myapp")

@@ -45,8 +45,20 @@ type Store struct {
 	h *duckdb.Handle
 }
 
-func Open(ctx context.Context, path string) (*Store, error) {
-	h := duckdb.NewHandle(path, schema, duckdb.Options{Unavailable: ErrUnavailable})
+type Option func(*duckdb.Options)
+
+func WithIdle(d time.Duration) Option { return func(o *duckdb.Options) { o.Idle = d } }
+
+func WithTimeout(d time.Duration) Option { return func(o *duckdb.Options) { o.Timeout = d } }
+
+func WithMaxHold(d time.Duration) Option { return func(o *duckdb.Options) { o.MaxHold = d } }
+
+func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
+	o := duckdb.Options{Unavailable: ErrUnavailable}
+	for _, fn := range opts {
+		fn(&o)
+	}
+	h := duckdb.NewHandle(path, schema, o)
 	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}

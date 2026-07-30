@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -21,11 +22,30 @@ var ErrUnavailable = errors.New("sealed store unavailable")
 var ErrUndecodable = errors.New("sealed value cannot be decrypted with the current key")
 
 // Entry is an app-agnostic credential-shaped blob stored encrypted at rest.
+//
+// Expiry and TTL are deliberately separate and must not be conflated:
+//
+//   - Expiry describes the credential. It is when the access token stops being
+//     accepted by the remote service. It is payload only: an entry whose access
+//     token expired is still stored, still returned by Get, and still carries
+//     its Scope and RefreshToken, so a caller can report "expired" and
+//     re-request exactly the permissions it had.
+//   - TTL describes the record. It is when the stored row itself becomes
+//     garbage and may be deleted, which happens on the next read or sweep.
+//     Leave it zero to keep the record until it is explicitly deleted.
+//
+// Setting TTL from Expiry destroys the credential's metadata at the moment a
+// caller most needs it, so do that only for records that are genuinely
+// worthless once expired.
 type Entry struct {
-	AccessToken  string    `json:"access_token,omitempty"`
-	RefreshToken string    `json:"refresh_token,omitempty"`
-	Scope        string    `json:"scope,omitempty"`
-	Expiry       time.Time `json:"expiry,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	Scope        string `json:"scope,omitempty"`
+	// Expiry is when the access token stops working. Payload only; it never
+	// deletes the record.
+	Expiry time.Time `json:"expiry,omitempty"`
+	// TTL is when the record may be discarded. Zero means keep it forever.
+	TTL time.Time `json:"ttl,omitempty"`
 }
 
 // Options configures Open. Key material comes from the OS keyring (via secret)
@@ -129,6 +149,13 @@ func (s *Store) encryptionKey(ctx context.Context) ([]byte, error) {
 	return k, nil
 }
 
+// Get returns the entry stored under name. A stored value must decrypt and
+// authenticate under the current key: there is no cleartext fallback, because a
+// value that failed its GCM tag and a value that was never sealed are
+// indistinguishable on the wire, and reading the second means anyone who can
+// write the database can substitute a credential without holding the key.
+// Anything that does not authenticate is reported as ErrUndecodable wrapping
+// the underlying failure, never as a miss and never as cleartext.
 func (s *Store) Get(ctx context.Context, name string) (Entry, bool, error) {
 	k := s.handle()
 	if k == nil {
@@ -142,18 +169,19 @@ func (s *Store) Get(ctx context.Context, name string) (Entry, bool, error) {
 	if err != nil {
 		return Entry{}, false, err
 	}
+	raw, derr := base64.StdEncoding.DecodeString(e.Value)
+	if derr != nil {
+		return Entry{}, false, fmt.Errorf("%w: %w", ErrUndecodable, derr)
+	}
+	plain, derr := backup.Decrypt(raw, key)
+	if derr != nil {
+		return Entry{}, false, fmt.Errorf("%w: %w", ErrUndecodable, derr)
+	}
 	var out Entry
-	if sealed, derr := base64.StdEncoding.DecodeString(e.Value); derr == nil {
-		if plain, derr := backup.Decrypt(sealed, key); derr == nil {
-			if json.Unmarshal(plain, &out) == nil {
-				return out, true, nil
-			}
-		}
+	if derr := json.Unmarshal(plain, &out); derr != nil {
+		return Entry{}, false, fmt.Errorf("%w: %w", ErrUndecodable, derr)
 	}
-	if json.Unmarshal([]byte(e.Value), &out) == nil {
-		return out, true, nil
-	}
-	return Entry{}, false, ErrUndecodable
+	return out, true, nil
 }
 
 func (s *Store) Put(ctx context.Context, name string, e Entry) error {
@@ -174,14 +202,7 @@ func (s *Store) Put(ctx context.Context, name string, e Entry) error {
 		return err
 	}
 	v := base64.StdEncoding.EncodeToString(sealed)
-	return k.Put(ctx, s.ns, name, v, rowExpiry(e))
-}
-
-func rowExpiry(e Entry) time.Time {
-	if e.RefreshToken != "" {
-		return time.Time{}
-	}
-	return e.Expiry
+	return k.Put(ctx, s.ns, name, v, e.TTL)
 }
 
 func (s *Store) Delete(ctx context.Context, name string) error {

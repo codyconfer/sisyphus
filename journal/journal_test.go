@@ -116,6 +116,12 @@ func TestNilStore(t *testing.T) {
 	if err := s.Delete(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Delete = %v, want ErrUnavailable", err)
 	}
+	if n, err := s.Prune(context.Background(), time.Now()); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Prune = %d, %v, want ErrUnavailable", n, err)
+	}
+	if n, err := s.Retain(context.Background(), 5); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Retain = %d, %v, want ErrUnavailable", n, err)
+	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
 	}
@@ -152,6 +158,12 @@ func TestClosedStoreUnavailable(t *testing.T) {
 	}
 	if err := s.Delete(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Delete = %v, want ErrUnavailable", err)
+	}
+	if n, err := s.Prune(context.Background(), time.Now()); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Prune = %d, %v, want ErrUnavailable", n, err)
+	}
+	if n, err := s.Retain(context.Background(), 5); n != 0 || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("closed Retain = %d, %v, want ErrUnavailable", n, err)
 	}
 }
 

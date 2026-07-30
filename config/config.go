@@ -1,14 +1,16 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 
 	kjson "github.com/knadh/koanf/parsers/json"
 	"github.com/knadh/koanf/parsers/yaml"
-	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/rawbytes"
 	"github.com/knadh/koanf/v2"
 )
@@ -54,7 +56,23 @@ func formatOf(name string) string {
 	return "yaml"
 }
 
-func ParseInto(target any, raw []byte, format, envPrefix string) error {
+type Option func(*parseOptions)
+
+type parseOptions struct {
+	envKeyMapper func(name string) []string
+}
+
+func WithEnvKeyMapper(fn func(name string) []string) Option {
+	return func(o *parseOptions) { o.envKeyMapper = fn }
+}
+
+func ParseInto(target any, raw []byte, format, envPrefix string, opts ...Option) error {
+	var o parseOptions
+	for _, apply := range opts {
+		if apply != nil {
+			apply(&o)
+		}
+	}
 	k := koanf.New(".")
 	if len(raw) > 0 {
 		parser := koanf.Parser(yaml.Parser())
@@ -66,12 +84,302 @@ func ParseInto(target any, raw []byte, format, envPrefix string) error {
 		}
 	}
 	if envPrefix != "" {
-		_ = k.Load(env.Provider(envPrefix, ".", func(s string) string {
-			return strings.ReplaceAll(strings.ToLower(strings.TrimPrefix(s, envPrefix)), "_", ".")
-		}), nil)
+		if err := loadEnvOverrides(k, target, envPrefix, o.envKeyMapper); err != nil {
+			return err
+		}
 	}
 	if err := k.Unmarshal("", target); err != nil {
 		return fmt.Errorf("decoding config: %w", err)
 	}
 	return nil
+}
+
+func loadEnvOverrides(k *koanf.Koanf, target any, prefix string, mapper func(string) []string) error {
+	values := map[string]string{}
+	names := []string{}
+	for _, entry := range os.Environ() {
+		eq := strings.IndexByte(entry, '=')
+		if eq <= 0 {
+			continue
+		}
+		name := entry[:eq]
+		if !strings.HasPrefix(name, prefix) || name == prefix {
+			continue
+		}
+		if _, dup := values[name]; !dup {
+			names = append(names, name)
+		}
+		values[name] = entry[eq+1:]
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+
+	var schema *envNode
+	if mapper == nil {
+		schema = newEnvSchema(target, k.Raw())
+	}
+
+	overrides := map[string]any{}
+	for _, name := range names {
+		var path []string
+		if mapper != nil {
+			path = mapper(name)
+		} else {
+			path = schema.resolve(envTokens(strings.TrimPrefix(name, prefix)))
+		}
+		if len(path) == 0 {
+			continue
+		}
+		setEnvPath(overrides, path, values[name])
+	}
+	if len(overrides) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(overrides)
+	if err != nil {
+		return fmt.Errorf("encoding %s* env overrides: %w", prefix, err)
+	}
+	if err := k.Load(rawbytes.Provider(encoded), kjson.Parser()); err != nil {
+		return fmt.Errorf("loading %s* env overrides: %w", prefix, err)
+	}
+	return nil
+}
+
+func envTokens(rest string) []string {
+	out := []string{}
+	for _, tok := range strings.Split(strings.ToLower(rest), "_") {
+		if tok != "" {
+			out = append(out, tok)
+		}
+	}
+	return out
+}
+
+func setEnvPath(m map[string]any, path []string, value string) {
+	for _, seg := range path[:len(path)-1] {
+		next, ok := m[seg].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			m[seg] = next
+		}
+		m = next
+	}
+	m[path[len(path)-1]] = value
+}
+
+type envNode struct {
+	children   map[string]*envNode
+	normalized map[string]string
+	dynamic    bool
+	dynamicKey []string
+	dynamicVal *envNode
+}
+
+const envMaxDepth = 12
+
+var envSeparators = strings.NewReplacer("_", "", "-", "", ".", "", " ", "")
+
+func normalizeEnvKey(s string) string {
+	return envSeparators.Replace(strings.ToLower(s))
+}
+
+func newEnvSchema(target any, existing map[string]any) *envNode {
+	v := reflect.ValueOf(target)
+	if !v.IsValid() {
+		return &envNode{}
+	}
+	return buildEnvNode(v.Type(), v, existing, 0)
+}
+
+func buildEnvNode(t reflect.Type, v reflect.Value, existing map[string]any, depth int) *envNode {
+	n := &envNode{}
+	if t == nil || depth > envMaxDepth {
+		return n
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+		if v.IsValid() {
+			if v.IsNil() {
+				v = reflect.Value{}
+			} else {
+				v = v.Elem()
+			}
+		}
+	}
+	if v.IsValid() && v.Kind() == reflect.Interface {
+		if v.IsNil() {
+			v = reflect.Value{}
+		} else {
+			v = v.Elem()
+		}
+	}
+	switch t.Kind() {
+	case reflect.Struct:
+		n.children = map[string]*envNode{}
+		n.normalized = map[string]string{}
+		addStructFields(n, t, v, existing, depth)
+	case reflect.Map:
+		if t.Key().Kind() != reflect.String {
+			return n
+		}
+		n.dynamic = true
+		n.dynamicVal = buildEnvNode(t.Elem(), reflect.Value{}, nil, depth+1)
+		seen := map[string]struct{}{}
+		if v.IsValid() && v.Kind() == reflect.Map && !v.IsNil() {
+			for _, mk := range v.MapKeys() {
+				key := mk.String()
+				if key == "" {
+					continue
+				}
+				if _, dup := seen[key]; !dup {
+					seen[key] = struct{}{}
+					n.dynamicKey = append(n.dynamicKey, key)
+				}
+			}
+		}
+		for key := range existing {
+			if key == "" {
+				continue
+			}
+			if _, dup := seen[key]; !dup {
+				seen[key] = struct{}{}
+				n.dynamicKey = append(n.dynamicKey, key)
+			}
+		}
+		sort.Strings(n.dynamicKey)
+	}
+	return n
+}
+
+func addStructFields(n *envNode, t reflect.Type, v reflect.Value, existing map[string]any, depth int) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		name, squash := envFieldName(f)
+		if name == "-" {
+			continue
+		}
+		var fv reflect.Value
+		if v.IsValid() && v.Kind() == reflect.Struct {
+			fv = v.Field(i)
+		}
+		if name == "" {
+			if squash {
+				ft := f.Type
+				for ft.Kind() == reflect.Pointer {
+					ft = ft.Elem()
+				}
+				if ft.Kind() == reflect.Struct && depth <= envMaxDepth {
+					addStructFields(n, ft, derefValue(fv), existing, depth)
+				}
+			}
+			continue
+		}
+		child := buildEnvNode(f.Type, fv, childMap(existing, name), depth+1)
+		if _, dup := n.children[name]; dup {
+			continue
+		}
+		n.children[name] = child
+		if norm := normalizeEnvKey(name); norm != "" {
+			if _, dup := n.normalized[norm]; !dup {
+				n.normalized[norm] = name
+			}
+		}
+	}
+}
+
+func derefValue(v reflect.Value) reflect.Value {
+	for v.IsValid() && v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return reflect.Value{}
+		}
+		v = v.Elem()
+	}
+	return v
+}
+
+func envFieldName(f reflect.StructField) (name string, squash bool) {
+	tag, ok := f.Tag.Lookup("koanf")
+	if !ok {
+		return strings.ToLower(f.Name), false
+	}
+	parts := strings.Split(tag, ",")
+	name = parts[0]
+	for _, opt := range parts[1:] {
+		if opt == "squash" {
+			squash = true
+		}
+	}
+	if name == "" && !squash {
+		return strings.ToLower(f.Name), false
+	}
+	return name, squash
+}
+
+func childMap(existing map[string]any, name string) map[string]any {
+	if existing == nil {
+		return nil
+	}
+	sub, ok := existing[name].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return sub
+}
+
+func (n *envNode) leaf() bool {
+	return n == nil || (len(n.children) == 0 && !n.dynamic)
+}
+
+func (n *envNode) resolve(tokens []string) []string {
+	if n == nil {
+		return nil
+	}
+	if len(tokens) == 0 {
+		return []string{}
+	}
+	for i := len(tokens); i >= 1; i-- {
+		for _, name := range n.match(tokens[:i]) {
+			if rest := n.children[name].resolve(tokens[i:]); rest != nil {
+				return append([]string{name}, rest...)
+			}
+		}
+	}
+	if !n.dynamic {
+		return nil
+	}
+	for i := len(tokens); i >= 1; i-- {
+		want := normalizeEnvKey(strings.Join(tokens[:i], ""))
+		for _, key := range n.dynamicKey {
+			if normalizeEnvKey(key) != want {
+				continue
+			}
+			if rest := n.dynamicVal.resolve(tokens[i:]); rest != nil {
+				return append([]string{key}, rest...)
+			}
+		}
+	}
+	if n.dynamicVal.leaf() {
+		return []string{strings.Join(tokens, ".")}
+	}
+	return nil
+}
+
+func (n *envNode) match(tokens []string) []string {
+	if len(n.children) == 0 {
+		return nil
+	}
+	var out []string
+	joined := strings.Join(tokens, "_")
+	if _, ok := n.children[joined]; ok {
+		out = append(out, joined)
+	}
+	if name, ok := n.normalized[normalizeEnvKey(strings.Join(tokens, ""))]; ok && (len(out) == 0 || out[0] != name) {
+		out = append(out, name)
+	}
+	return out
 }

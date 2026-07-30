@@ -156,6 +156,72 @@ func TestClear(t *testing.T) {
 	}
 }
 
+func TestStats(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if err := s.Put(ctx, "a", "k1", "v", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(ctx, "a", "k2", "v", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(ctx, "a", "gone", "v", time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(ctx, "b", "k1", "v", time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := s.Stats(ctx, time.Minute)
+	if err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(stats) != 2 || stats[0].Namespace != "a" || stats[1].Namespace != "b" {
+		t.Fatalf("Stats = %+v, want a then b", stats)
+	}
+	a := stats[0]
+	if a.Entries != 2 {
+		t.Errorf("a.Entries = %d, want 2 live rows", a.Entries)
+	}
+	if a.Expired != 1 {
+		t.Errorf("a.Expired = %d, want 1", a.Expired)
+	}
+	if a.Fresh != 2 {
+		t.Errorf("a.Fresh = %d, want both rows inside the window", a.Fresh)
+	}
+	if a.Oldest.IsZero() || a.Newest.IsZero() || a.Newest.Before(a.Oldest) {
+		t.Errorf("a oldest/newest = %v/%v", a.Oldest, a.Newest)
+	}
+	if stats[1].Entries != 1 {
+		t.Errorf("b.Entries = %d, want 1", stats[1].Entries)
+	}
+
+	if stats, err := s.Stats(ctx, 0); err != nil {
+		t.Fatal(err)
+	} else if stats[0].Fresh != 0 {
+		t.Errorf("Fresh with no window = %d, want 0", stats[0].Fresh)
+	}
+
+	// Stats is read-only: the expired row it reported is still there.
+	if n, err := s.Sweep(ctx); err != nil || n != 1 {
+		t.Fatalf("Sweep after Stats = %d %v, want the expired row still present", n, err)
+	}
+	stats, err = s.Stats(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats[0].Expired != 0 {
+		t.Errorf("a.Expired after sweep = %d, want 0", stats[0].Expired)
+	}
+}
+
+func TestStatsEmpty(t *testing.T) {
+	stats, err := openTemp(t).Stats(context.Background(), time.Minute)
+	if err != nil || len(stats) != 0 {
+		t.Fatalf("Stats on an empty store = %+v %v", stats, err)
+	}
+}
+
 func TestNilStore(t *testing.T) {
 	var s *Store
 	if _, ok, err := s.Get(context.Background(), "n", "k"); ok || !errors.Is(err, ErrUnavailable) {
@@ -178,6 +244,9 @@ func TestNilStore(t *testing.T) {
 	}
 	if n, err := s.Clear(context.Background(), ""); n != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Clear = %d %v, want ErrUnavailable", n, err)
+	}
+	if st, err := s.Stats(context.Background(), 0); st != nil || !errors.Is(err, ErrUnavailable) {
+		t.Errorf("nil Stats = %v %v, want ErrUnavailable", st, err)
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("nil Close = %v", err)
