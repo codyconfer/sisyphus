@@ -1,4 +1,4 @@
-package daemon
+package schedule
 
 import (
 	"bytes"
@@ -31,7 +31,7 @@ func TestScheduleCatchUpAndCancel(t *testing.T) {
 	defer cancel()
 	var n atomic.Int32
 	go func() {
-		_ = Schedule(ctx, 10*time.Millisecond, ScheduleJob{
+		_ = Run(ctx, 10*time.Millisecond, Job{
 			Next: func(_ context.Context, now time.Time) (Due, error) {
 				if n.Load() == 0 {
 					return Due{At: now}, nil
@@ -63,7 +63,7 @@ func TestScheduleContinuesAfterTransientErrors(t *testing.T) {
 	defer cancel()
 	var nextCalls, runs atomic.Int32
 	go func() {
-		_ = Schedule(ctx, 5*time.Millisecond, ScheduleJob{
+		_ = Run(ctx, 5*time.Millisecond, Job{
 			Next: func(_ context.Context, now time.Time) (Due, error) {
 				n := nextCalls.Add(1)
 				if n < 3 {
@@ -111,7 +111,7 @@ func TestScheduleBacksOffExponentiallyAndReportsErrors(t *testing.T) {
 	start := time.Now()
 	go func() {
 		defer close(done)
-		_ = Schedule(ctx, interval, ScheduleJob{
+		_ = Run(ctx, interval, Job{
 			Name: "failing",
 			Next: func(context.Context, time.Time) (Due, error) {
 				nextCalls.Add(1)
@@ -134,7 +134,7 @@ func TestScheduleBacksOffExponentiallyAndReportsErrors(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		t.Fatal("Schedule did not return after cancel")
+		t.Fatal("Run did not return after cancel")
 	}
 	elapsed := time.Since(start)
 
@@ -184,7 +184,7 @@ func TestScheduleFailingJobDoesNotDisturbHealthyJob(t *testing.T) {
 	defer cancel()
 
 	var failingNext, healthyNext, healthyRuns atomic.Int32
-	failing := ScheduleJob{
+	failing := Job{
 		Name: "failing",
 		Next: func(context.Context, time.Time) (Due, error) {
 			failingNext.Add(1)
@@ -193,7 +193,7 @@ func TestScheduleFailingJobDoesNotDisturbHealthyJob(t *testing.T) {
 		Run:     func(context.Context) error { return nil },
 		OnError: func(error, int, time.Duration) {},
 	}
-	healthy := ScheduleJob{
+	healthy := Job{
 		Name: "healthy",
 		Next: func(_ context.Context, now time.Time) (Due, error) {
 			healthyNext.Add(1)
@@ -206,7 +206,7 @@ func TestScheduleFailingJobDoesNotDisturbHealthyJob(t *testing.T) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- Schedule(ctx, interval, failing, healthy) }()
+	go func() { done <- Run(ctx, interval, failing, healthy) }()
 
 	timer := time.NewTimer(400 * time.Millisecond)
 	<-timer.C
@@ -214,10 +214,10 @@ func TestScheduleFailingJobDoesNotDisturbHealthyJob(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("Schedule err = %v, want nil", err)
+			t.Fatalf("Run err = %v, want nil", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("Schedule did not return after cancel")
+		t.Fatal("Run did not return after cancel")
 	}
 
 	if n := healthyNext.Load(); n > 2 {
@@ -248,7 +248,7 @@ func TestScheduleLogsFailuresWithoutHook(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Schedule(ctx, interval, ScheduleJob{
+		_ = Run(ctx, interval, Job{
 			Name: "oauth-source",
 			Next: func(context.Context, time.Time) (Due, error) {
 				if calls.Add(1) >= 2 {
@@ -262,7 +262,7 @@ func TestScheduleLogsFailuresWithoutHook(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Schedule did not return after cancel")
+		t.Fatal("Run did not return after cancel")
 	}
 
 	out := buf.String()
@@ -288,7 +288,7 @@ func TestScheduleResetsFailureStreakOnSuccess(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Schedule(ctx, interval, ScheduleJob{
+		_ = Run(ctx, interval, Job{
 			Name: "flappy",
 			Next: func(_ context.Context, now time.Time) (Due, error) {
 				switch attempt.Add(1) {
@@ -319,7 +319,7 @@ func TestScheduleResetsFailureStreakOnSuccess(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Schedule did not return after cancel")
+		t.Fatal("Run did not return after cancel")
 	}
 
 	mu.Lock()
@@ -359,7 +359,7 @@ func TestScheduleReportsThroughInjectedLogger(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Schedule(ctx, interval, ScheduleJob{
+		_ = Run(ctx, interval, Job{
 			Name:   "oauth-source",
 			Logger: logger,
 			Next: func(context.Context, time.Time) (Due, error) {
@@ -374,7 +374,7 @@ func TestScheduleReportsThroughInjectedLogger(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Schedule did not return after cancel")
+		t.Fatal("Run did not return after cancel")
 	}
 
 	mu.Lock()
@@ -409,7 +409,7 @@ func TestScheduleDoesNotReportShutdown(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Schedule(ctx, 10*time.Millisecond, ScheduleJob{
+		_ = Run(ctx, 10*time.Millisecond, Job{
 			Name: "shutting-down",
 			Next: func(c context.Context, _ time.Time) (Due, error) {
 				cancel()
@@ -424,7 +424,7 @@ func TestScheduleDoesNotReportShutdown(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Schedule did not return after cancel")
+		t.Fatal("Run did not return after cancel")
 	}
 	if n := reports.Load(); n != 0 {
 		t.Fatalf("failure reports during shutdown = %d, want 0", n)
@@ -439,7 +439,7 @@ func TestScheduleReportsJobOwnDeadline(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = Schedule(ctx, 10*time.Millisecond, ScheduleJob{
+		_ = Run(ctx, 10*time.Millisecond, Job{
 			Name: "slow-source",
 			Next: func(parent context.Context, _ time.Time) (Due, error) {
 				own, stop := context.WithTimeout(parent, time.Millisecond)
@@ -468,6 +468,6 @@ func TestScheduleReportsJobOwnDeadline(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Schedule did not return after cancel")
+		t.Fatal("Run did not return after cancel")
 	}
 }

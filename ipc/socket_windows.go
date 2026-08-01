@@ -1,6 +1,6 @@
 //go:build windows
 
-package daemon
+package ipc
 
 import (
 	"context"
@@ -10,12 +10,9 @@ import (
 	"net"
 	"os"
 	"os/user"
-	"time"
 
 	"github.com/Microsoft/go-winio"
 )
-
-const dialProbeTimeout = 200 * time.Millisecond
 
 func pipeName(prefix, name string) string {
 	if prefix == "" {

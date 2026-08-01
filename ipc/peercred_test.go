@@ -1,9 +1,11 @@
-package daemon
+package ipc
 
 import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/codyconfer/sisyphus/stream"
 )
 
 func TestAllowPeerAcceptsSameUID(t *testing.T) {
@@ -14,7 +16,7 @@ func TestAllowPeerAcceptsSameUID(t *testing.T) {
 	}
 	defer ln.Close()
 
-	subj := NewSubject[int]()
+	subj := stream.NewSubject[int]()
 	defer subj.Close()
 	go Broadcast(t.Context(), ln, subj, 8, encodeInt)
 

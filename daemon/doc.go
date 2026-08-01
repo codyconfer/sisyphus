@@ -1,13 +1,10 @@
-// Package daemon holds the streaming core a long-running service is built
-// from: polling sources (Poll, PollAdaptive) that emit Emission batches,
-// channel plumbing (FanIn, Subject, Run), deduplication with optional
-// kv-backed persistence (Deduper, Cursor, Watermark), a lightweight job
-// scheduler (Schedule, RunAt), and the local IPC surface — a Unix socket on
-// Unix, a named pipe on Windows — used to broadcast events to attached
-// clients (Listen, Broadcast, Dial).
+// Package daemon holds what is genuinely daemon-flavored: SignalContext for
+// shutdown-signal handling and Attached, the capability-aware probe for a
+// running service. The service manager lives in daemon/service.
 //
-// Everything here is untagged and available in `nodaemon` builds too; only
-// the daemon/service and daemon/ui sub-packages are compiled out. Use
-// Attached (capability-aware) rather than IsListening to gate features on a
-// running service.
+// Everything else that used to live here has moved to semantic packages —
+// event pipelines to sisyphus/stream, socket/pipe transport to sisyphus/ipc,
+// periodic jobs to sisyphus/schedule, and run-state icons plus the systray to
+// sisyphus/tray. The deprecated forwarders in facade.go keep old import
+// paths compiling; new code should import the new packages directly.
 package daemon

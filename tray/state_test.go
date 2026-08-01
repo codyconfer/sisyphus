@@ -1,4 +1,4 @@
-package daemon
+package tray
 
 import (
 	"reflect"
@@ -26,8 +26,8 @@ func TestStateStringAndSet(t *testing.T) {
 	}
 }
 
-func TestStateIconsRegisterGetMissing(t *testing.T) {
-	si := NewStateIcons()
+func TestIconsSetGetMissing(t *testing.T) {
+	si := NewIcons()
 	if got := si.Missing(); !reflect.DeepEqual(got, States()) {
 		t.Fatalf("empty registry Missing() = %v, want all states", got)
 	}
@@ -36,7 +36,7 @@ func TestStateIconsRegisterGetMissing(t *testing.T) {
 	}
 
 	for _, s := range States() {
-		si.Register(s, "image/png", []byte(s.String()))
+		si.Set(s, Asset{Name: "state:" + s.String(), MIME: "image/png", Bytes: []byte(s.String())})
 	}
 	if got := si.Missing(); got != nil {
 		t.Fatalf("full registry Missing() = %v, want nil", got)
@@ -51,8 +51,8 @@ func TestStateIconsRegisterGetMissing(t *testing.T) {
 	}
 }
 
-func TestStateIconsPartialMissing(t *testing.T) {
-	si := NewStateIcons()
+func TestIconsPartialMissing(t *testing.T) {
+	si := NewIcons()
 	si.Set(StateRunning, Asset{Name: "run", Bytes: []byte{1}})
 	si.Set(StateError, Asset{Name: "err", Bytes: []byte{2}})
 	got := si.Missing()
@@ -62,10 +62,10 @@ func TestStateIconsPartialMissing(t *testing.T) {
 	}
 }
 
-func TestDefaultStateIconRegistry(t *testing.T) {
-	RegisterStateIcon(StateNotify, "image/svg+xml", []byte("<svg/>"))
-	got, ok := StateIcon(StateNotify)
+func TestDefaultIconRegistry(t *testing.T) {
+	SetIcon(StateNotify, Asset{Name: "state:notify", MIME: "image/svg+xml", Bytes: []byte("<svg/>")})
+	got, ok := IconFor(StateNotify)
 	if !ok || got.MIME != "image/svg+xml" {
-		t.Fatalf("StateIcon(StateNotify) = %+v, ok=%v", got, ok)
+		t.Fatalf("IconFor(StateNotify) = %+v, ok=%v", got, ok)
 	}
 }

@@ -1,4 +1,4 @@
-package daemon
+package ipc
 
 import (
 	"bufio"
@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/codyconfer/sisyphus/stream"
 )
 
 func encodeInt(v int) ([]byte, error) { return []byte(strconv.Itoa(v)), nil }
@@ -39,7 +41,7 @@ func TestSocketBroadcastToMultipleClients(t *testing.T) {
 	}
 	defer ln.Close()
 
-	subj := NewSubject[int]()
+	subj := stream.NewSubject[int]()
 	defer subj.Close()
 	go Broadcast(t.Context(), ln, subj, 8, encodeInt)
 
@@ -256,7 +258,7 @@ func TestBroadcastFreesSlotAfterPeerCloses(t *testing.T) {
 	}
 	defer ln.Close()
 
-	subj := NewSubject[int]()
+	subj := stream.NewSubject[int]()
 	defer subj.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -307,7 +309,7 @@ func TestBroadcastFreesSlotAfterPeerCloses(t *testing.T) {
 	}
 }
 
-func publishUntilStopped(subj *Subject[int], v int) func() {
+func publishUntilStopped(subj *stream.Subject[int], v int) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	go func() {

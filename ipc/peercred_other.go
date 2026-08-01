@@ -1,6 +1,6 @@
 //go:build !linux && !darwin && !freebsd
 
-package daemon
+package ipc
 
 import "net"
 

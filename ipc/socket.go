@@ -1,4 +1,4 @@
-package daemon
+package ipc
 
 import (
 	"bufio"
@@ -6,11 +6,16 @@ import (
 	"errors"
 	"net"
 	"time"
+
+	"github.com/codyconfer/sisyphus/stream"
 )
 
 // ErrInUse reports that another process already listens on the socket or
 // pipe. Listen returns it wrapped, so match with errors.Is.
 var ErrInUse = errors.New("address already in use")
+
+// dialProbeTimeout bounds the liveness probe both Dial and IsListening use.
+const dialProbeTimeout = 200 * time.Millisecond
 
 const (
 	broadcastWriteTimeout = 10 * time.Second
@@ -27,7 +32,7 @@ const (
 // (extras are closed immediately), a value that fails to encode is skipped,
 // and a connection whose write blocks past ten seconds is dropped.
 // Broadcast blocks; run it in its own goroutine.
-func Broadcast[T any](ctx context.Context, ln net.Listener, subj *Subject[T], buffer int, encode func(T) ([]byte, error)) {
+func Broadcast[T any](ctx context.Context, ln net.Listener, subj *stream.Subject[T], buffer int, encode func(T) ([]byte, error)) {
 	go func() {
 		<-ctx.Done()
 		_ = ln.Close()
@@ -55,7 +60,7 @@ func Broadcast[T any](ctx context.Context, ln net.Listener, subj *Subject[T], bu
 	}
 }
 
-func broadcastConn[T any](ctx context.Context, conn net.Conn, subj *Subject[T], buffer int, encode func(T) ([]byte, error)) {
+func broadcastConn[T any](ctx context.Context, conn net.Conn, subj *stream.Subject[T], buffer int, encode func(T) ([]byte, error)) {
 	defer conn.Close()
 	sub := subj.Subscribe(buffer)
 	defer subj.Unsubscribe(sub)

@@ -33,9 +33,13 @@ database. DuckDB-backed packages require CGO (via
 | `sisyphus/mode` | Operating modes + injectable auth gate hooks. |
 | `sisyphus/lifecycle` | Home-dir install / clean / nuke primitives; shell hook runner (`Scripts` / `Select` / `Run`). |
 | `sisyphus/desktop` | OS desktop notifications (beeep). Untagged leaf — does not import `daemon`. |
-| `sisyphus/daemon` | Streaming core: poll/fan-in/dedupe, sockets (pipe-prefix param on Windows), cursors. |
+| `sisyphus/stream` | Event pipelines: `Poll`/`Source`, fan-in, `Subject`, dedupe, KV-backed `Cursor`/`Watermark`. |
+| `sisyphus/ipc` | Local transport: unix sockets / named pipes (`Listen`/`Dial`/`Broadcast`/`IsListening`). |
+| `sisyphus/schedule` | Periodic jobs: `Run` drives `Job`s with backoff; `RunAt` for one-shots. |
+| `sisyphus/tray` | Daemon run-state (`State`) + icon assets (untagged) and the systray (`!nodaemon`). |
+| `sisyphus/daemon` | Residue: `SignalContext`, capability probe `Attached`, plus deprecated forwarders for everything that moved to the four packages above. |
 | `sisyphus/daemon/service` | OS service install/start/stop wrapper. Empty under [`nodaemon`](#daemon-free-builds-nodaemon). |
-| `sisyphus/daemon/ui` | System tray. Empty under [`nodaemon`](#daemon-free-builds-nodaemon). |
+| `sisyphus/daemon/ui` | Deprecated facade: the system tray moved to `sisyphus/tray`. Empty under [`nodaemon`](#daemon-free-builds-nodaemon). |
 
 Each sub-package is usable on its own. A nil `*Store` is a valid no-op across the
 DuckDB packages, so "disabled" and "open failed" behave uniformly.
@@ -150,15 +154,15 @@ make test TAGS=nodaemon
 | `mode.Supported(m)` | `true` for every mode | `false` for `ModeServe` / `ModeDaemon` |
 | `mode.Gate(ctx, m, hooks)` | Runs the hooks | Wraps `ErrUnsupportedMode` for serve/daemon |
 | `daemon.Attached(prefix, name)` | Probes the socket when `DaemonSupported` | Always `false` (gates on `mode.DaemonSupported`) |
-| `daemon/service`, `daemon/ui` | Full API | Empty packages |
+| `daemon/service`, `daemon/ui`, `tray.Tray` | Full API | Empty packages / compiled out |
 | `desktop` | Full API | Full API (untagged; import only when you want notifications) |
 
 `DaemonSupported` is a constant, so `if !mode.DaemonSupported { … }` is
 eliminated at compile time and the daemon half of your program can be dropped
 from the binary. `daemon.Attached` is the capability-aware form of
-`daemon.IsListening` — it returns false when `!mode.DaemonSupported`, otherwise
-delegates to `IsListening`. Gate optional UI and features on `Attached`, and use
-`IsListening` only when you want a raw probe regardless of build.
+`ipc.IsListening` — it returns false when `!mode.DaemonSupported`, otherwise
+delegates to `ipc.IsListening`. Gate optional UI and features on `Attached`, and
+use `ipc.IsListening` only when you want a raw probe regardless of build.
 `mode` is the sole build-tag value source for daemon capability; `Attached` is
 untagged and imports `mode`.
 

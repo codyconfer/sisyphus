@@ -1,6 +1,6 @@
 //go:build darwin || freebsd
 
-package daemon
+package ipc
 
 import (
 	"net"

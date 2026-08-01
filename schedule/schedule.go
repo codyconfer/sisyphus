@@ -1,4 +1,4 @@
-package daemon
+package schedule
 
 import (
 	"context"
@@ -16,11 +16,11 @@ type Due struct {
 	At time.Time
 }
 
-// ScheduleJob is one job managed by Schedule. Next reports when the job
+// Job is one job managed by Run. Next reports when the job
 // should next run; Run does the work. A job missing either function is
 // skipped. Errors from Next or Run go to OnError when set, otherwise to
 // Logger (or slog.Default) as a warning.
-type ScheduleJob struct {
+type Job struct {
 	Name    string
 	Next    func(ctx context.Context, now time.Time) (Due, error)
 	Run     func(ctx context.Context) error
@@ -33,7 +33,7 @@ type scheduleState struct {
 	at    time.Time
 }
 
-// Schedule runs jobs until ctx is cancelled, then returns nil (it never
+// Run drives jobs until ctx is cancelled, then returns nil (it never
 // returns an error). Each cycle it asks every eligible job's Next when it is
 // due; a Due.At at or before now runs the job, a later one is waited for,
 // and a zero Due.At re-asks after interval (<= 0 means one second). A job
@@ -41,7 +41,7 @@ type scheduleState struct {
 // interval up to five minutes, and the failure is reported through OnError
 // or the job's logger. Jobs run sequentially on the scheduler's goroutine —
 // a slow Run delays the other jobs.
-func Schedule(ctx context.Context, interval time.Duration, jobs ...ScheduleJob) error {
+func Run(ctx context.Context, interval time.Duration, jobs ...Job) error {
 	if interval <= 0 {
 		interval = time.Second
 	}
@@ -114,7 +114,7 @@ func Schedule(ctx context.Context, interval time.Duration, jobs ...ScheduleJob) 
 	}
 }
 
-func (st *scheduleState) fail(job ScheduleJob, interval time.Duration, now time.Time, err error) time.Time {
+func (st *scheduleState) fail(job Job, interval time.Duration, now time.Time, err error) time.Time {
 	if st.fails < maxScheduleFails {
 		st.fails++
 	}
@@ -143,7 +143,7 @@ func scheduleBackoff(interval time.Duration, fails int) time.Duration {
 	return d
 }
 
-func reportScheduleError(job ScheduleJob, err error, fails int, retryIn time.Duration) {
+func reportScheduleError(job Job, err error, fails int, retryIn time.Duration) {
 	if job.OnError != nil {
 		job.OnError(err, fails, retryIn)
 		return

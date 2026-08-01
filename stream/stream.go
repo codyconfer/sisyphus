@@ -1,19 +1,10 @@
-package daemon
+package stream
 
 import (
 	"context"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 )
-
-// SignalContext returns a context cancelled by SIGINT/SIGTERM, mirroring
-// signal.NotifyContext with the service-shutdown signal set.
-func SignalContext(parent context.Context) (context.Context, func()) {
-	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
-}
 
 // FanIn merges chans into one channel. The output closes once every input
 // has closed or ctx is cancelled; values are forwarded unbuffered.

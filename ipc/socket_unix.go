@@ -1,6 +1,6 @@
 //go:build !windows
 
-package daemon
+package ipc
 
 import (
 	"context"
@@ -14,8 +14,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-const dialProbeTimeout = 200 * time.Millisecond
 
 const (
 	lockAcquireTimeout = 2 * time.Second

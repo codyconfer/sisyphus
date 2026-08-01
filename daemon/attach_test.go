@@ -1,10 +1,28 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/codyconfer/sisyphus/mode"
 )
+
+// shortSocketPath keeps the socket path under the sun_path limit; mirrors the
+// helper of the same name in ipc's tests.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "sisyphus-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove socket temp directory: %v", err)
+		}
+	})
+	return filepath.Join(dir, "s.sock")
+}
 
 func TestAttachedRespectsDaemonSupported(t *testing.T) {
 	path := shortSocketPath(t)
