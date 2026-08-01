@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,6 +75,9 @@ func TestBumpIgnoresFixedTempPath(t *testing.T) {
 }
 
 func TestBumpFailureReportsCommittedChange(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce POSIX directory write bits")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}

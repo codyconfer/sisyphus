@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/codyconfer/sisyphus/config"
@@ -57,7 +58,8 @@ type Snapshot struct {
 // A nil *Store is a valid no-op: reads report absent with a nil error, writes
 // return ErrUnavailable, and Close returns nil.
 type Store struct {
-	h *duckdb.Handle
+	h     *duckdb.Handle
+	revMu sync.Mutex
 }
 
 // Open opens (or creates) the store's DuckDB file at path and ensures its

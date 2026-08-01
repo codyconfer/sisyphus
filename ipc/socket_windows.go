@@ -31,6 +31,7 @@ func ownerOnlySDDL() string {
 	return "D:P(A;;GA;;;OW)(A;;GA;;;SY)(A;;GA;;;BA)"
 }
 
+// Listen binds an owner-only Windows named pipe derived from prefix and name.
 func Listen(prefix, name string) (net.Listener, error) {
 	pipe := pipeName(prefix, name)
 	ln, err := winio.ListenPipe(pipe, &winio.PipeConfig{SecurityDescriptor: ownerOnlySDDL()})
@@ -47,6 +48,7 @@ func dialConn(ctx context.Context, prefix, name string) (net.Conn, error) {
 	return winio.DialPipeContext(ctx, pipeName(prefix, name))
 }
 
+// IsListening reports whether the named pipe accepts connections.
 func IsListening(prefix, name string) bool {
 	timeout := dialProbeTimeout
 	conn, err := winio.DialPipe(pipeName(prefix, name), &timeout)

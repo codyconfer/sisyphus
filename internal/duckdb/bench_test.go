@@ -82,17 +82,6 @@ func startContender(t testing.TB, path string) {
 	waitFor(t, path+readySuffix)
 }
 
-// contendOps is enough work to span many handoffs, so the test measures the
-// steady state of two processes trading the file rather than one acquisition.
-const contendOps = 320
-
-// contendBudget is what that work has to fit in. It is loose on purpose: this
-// pins the shape of the handoff, not a number. Around a second is normal here;
-// the failure it is built to catch is a handoff that thrashes, which costs
-// seconds. Shortening yieldToWaiter to a couple of lock polls, so that each side
-// re-queues before the other has started work, measured seven times over.
-const contendBudget = 3 * time.Second
-
 // TestHandleTwoProcessContention is the evidence that two independent processes
 // interleave on a single-writer database: both get work done, and neither pays
 // so much for the handoff that it would have been better off failing.

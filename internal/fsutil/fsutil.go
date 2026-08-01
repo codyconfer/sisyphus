@@ -147,7 +147,7 @@ func WriteAtomic(path string, content []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(name, path); err != nil {
+	if err := replaceFile(name, path); err != nil {
 		return err
 	}
 	SyncDir(filepath.Dir(path))

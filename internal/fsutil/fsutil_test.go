@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -82,12 +83,31 @@ func TestAppendItemAppends(t *testing.T) {
 	if string(got) != "one\ntwo\n" {
 		t.Errorf("content = %q, want %q", got, "one\ntwo\n")
 	}
-	fi, err := os.Stat(path)
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("mode = %v, want 0600", fi.Mode().Perm())
+		}
+	}
+}
+
+func TestWriteAtomicReplacesExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state")
+	if err := WriteAtomic(path, []byte("before")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAtomic(path, []byte("after")); err != nil {
+		t.Fatalf("replace existing file: %v", err)
+	}
+	got, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("mode = %v, want 0600", fi.Mode().Perm())
+	if string(got) != "after" {
+		t.Fatalf("content = %q, want after", got)
 	}
 }
 

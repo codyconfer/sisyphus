@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -493,6 +494,9 @@ func TestRestoreSweepsOrphanedStageDirs(t *testing.T) {
 }
 
 func TestArchiveRefusesADatabaseItCannotCheckpoint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce POSIX directory write bits")
+	}
 	for _, tc := range []struct {
 		name  string
 		clean bool

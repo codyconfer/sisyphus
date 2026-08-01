@@ -125,22 +125,19 @@ func snapshot(ctx context.Context, path string) ([]file, error) {
 }
 
 func snapshotDB(ctx context.Context, path string) ([]file, error) {
-	var out []file
-	h := duckdb.NewHandle(path, "", duckdb.Options{Timeout: lockTimeout})
-	defer func() { _ = h.Close() }()
-	err := h.Do(ctx, func(db *sql.DB) error {
-		if _, err := db.ExecContext(ctx, "CHECKPOINT"); err != nil {
-			return fmt.Errorf("checkpointing: %w", err)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		out = []file{{name: filepath.Base(path), data: data}}
-		return nil
-	})
+	var data []byte
+	lock, err := duckdb.AcquireLock(ctx, path, lockTimeout)
 	if err == nil {
-		return out, nil
+		defer lock.Release()
+		db, openErr := duckdb.Open(ctx, path, "")
+		if openErr != nil {
+			err = openErr
+		} else {
+			data, err = checkpointCloseAndRead(ctx, db, path)
+		}
+	}
+	if err == nil {
+		return []file{{name: filepath.Base(path), data: data}}, nil
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
@@ -156,6 +153,27 @@ func snapshotDB(ctx context.Context, path string) ([]file, error) {
 			"which read-only media cannot give: %w", base, err)
 	}
 	return nil, fmt.Errorf("refusing to back up %s: cannot snapshot it safely: %w", base, err)
+}
+
+func checkpointCloseAndRead(ctx context.Context, db *sql.DB, path string) ([]byte, error) {
+	closed := false
+	defer func() {
+		if !closed {
+			_ = db.Close()
+		}
+	}()
+	if _, err := db.ExecContext(ctx, "CHECKPOINT"); err != nil {
+		return nil, fmt.Errorf("checkpointing: %w", err)
+	}
+	if err := db.Close(); err != nil {
+		return nil, fmt.Errorf("closing after checkpoint: %w", err)
+	}
+	closed = true
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func readPlain(path string) ([]file, error) {
@@ -306,6 +324,10 @@ func (s *swap) run(names []string) error {
 	for _, base := range names {
 		for _, name := range []string{base, base + walSuffix, base + tempSuffix} {
 			if err := s.setAside(name); err != nil {
+				if renameHeld(err) {
+					return s.abort(fmt.Errorf("refusing to restore over %s: %w: %w",
+						base, duckdb.ErrLocked, err))
+				}
 				return s.abort(fmt.Errorf("setting %s aside: %w", name, err))
 			}
 		}

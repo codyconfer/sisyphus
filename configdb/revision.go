@@ -37,6 +37,9 @@ func (s *Store) Generation() (string, bool) {
 }
 
 func (s *Store) bump(change string) error {
+	s.revMu.Lock()
+	defer s.revMu.Unlock()
+
 	path := s.h.Path() + revSuffix
 	rev := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + Hash("gen", []byte(change))[:12]
 	dir, file := filepath.Split(path)
