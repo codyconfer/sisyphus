@@ -162,7 +162,7 @@ func holdForChild(t *testing.T, path string) {
 	}
 }
 
-func waitFor(t *testing.T, path string) {
+func waitFor(t testing.TB, path string) {
 	t.Helper()
 	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
 		if _, err := os.Stat(path); err == nil {
