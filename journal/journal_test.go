@@ -22,7 +22,7 @@ func TestBeginRollUpChildren(t *testing.T) {
 	s := openTemp(t)
 	now := time.Now()
 
-	parent, err := s.Begin(context.Background(), "job", "nightly", map[string]string{"env": "prod"})
+	parent, err := s.StartRun(context.Background(), "job", "nightly", map[string]string{"env": "prod"})
 	if err != nil || parent == 0 {
 		t.Fatalf("Begin = %d, %v", parent, err)
 	}
@@ -34,7 +34,7 @@ func TestBeginRollUpChildren(t *testing.T) {
 		[]Record{{Attrs: map[string]string{"title": "z"}}}); err != nil {
 		t.Fatalf("Add b: %v", err)
 	}
-	if err := s.RollUp(context.Background(), parent); err != nil {
+	if err := s.FinishRun(context.Background(), parent); err != nil {
 		t.Fatalf("RollUp: %v", err)
 	}
 
@@ -86,16 +86,16 @@ func TestAddStandaloneWithError(t *testing.T) {
 
 func TestNilStore(t *testing.T) {
 	var s *Store
-	if id, err := s.Begin(context.Background(), "k", "n", nil); id != 0 || !errors.Is(err, ErrUnavailable) {
+	if id, err := s.StartRun(context.Background(), "k", "n", nil); id != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Begin = %d, %v", id, err)
 	}
 	if id, err := s.Add(context.Background(), Run{}, nil); id != 0 || !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil Add = %d, %v", id, err)
 	}
-	if err := s.RollUp(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
+	if err := s.FinishRun(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil RollUp = %v, want ErrUnavailable", err)
 	}
-	if err := s.RollUp(context.Background(), 0); !errors.Is(err, ErrUnavailable) {
+	if err := s.FinishRun(context.Background(), 0); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("nil RollUp(0) = %v, want ErrUnavailable", err)
 	}
 	if runs, err := s.Recent(context.Background(), 5); runs != nil || !errors.Is(err, ErrUnavailable) {
@@ -132,13 +132,13 @@ func TestClosedStoreUnavailable(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Begin(context.Background(), "k", "n", nil); !errors.Is(err, ErrUnavailable) {
+	if _, err := s.StartRun(context.Background(), "k", "n", nil); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Begin = %v, want ErrUnavailable", err)
 	}
 	if _, err := s.Add(context.Background(), Run{}, nil); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed Add = %v, want ErrUnavailable", err)
 	}
-	if err := s.RollUp(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
+	if err := s.FinishRun(context.Background(), 1); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("closed RollUp = %v, want ErrUnavailable", err)
 	}
 	if runs, err := s.Recent(context.Background(), 5); runs != nil || !errors.Is(err, ErrUnavailable) {
@@ -169,7 +169,7 @@ func TestClosedStoreUnavailable(t *testing.T) {
 
 func TestRollUpZeroIDNoop(t *testing.T) {
 	s := openTemp(t)
-	if err := s.RollUp(context.Background(), 0); err != nil {
+	if err := s.FinishRun(context.Background(), 0); err != nil {
 		t.Errorf("RollUp(0) = %v, want nil", err)
 	}
 }
@@ -179,7 +179,7 @@ func TestDeleteRemovesRunChildrenAndRecords(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
 
-	parent, err := s.Begin(ctx, "job", "nightly", nil)
+	parent, err := s.StartRun(ctx, "job", "nightly", nil)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestDeleteZeroIDNoopAndUnknownID(t *testing.T) {
 
 func TestQuery(t *testing.T) {
 	s := openTemp(t)
-	id, err := s.Begin(context.Background(), "job", "q", nil)
+	id, err := s.StartRun(context.Background(), "job", "q", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

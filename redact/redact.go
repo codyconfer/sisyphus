@@ -1,3 +1,7 @@
+// Package redact masks secret-looking values in config content before it is
+// displayed or logged. Keys are judged by name (IsSecretKey), values are
+// replaced with Mask, and the original input is never modified — everything
+// returns new strings.
 package redact
 
 import (
@@ -8,9 +12,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Mask is the string that replaces every redacted value.
 const Mask = "••••••"
 
-func Config(content []byte, format string) string {
+// Document redacts a whole config document. It parses content as JSON when
+// format is "json" (any case) and as YAML otherwise, masks every value whose
+// key IsSecretKey reports secret (recursively, arrays included), and
+// re-renders the document. Content that does not parse, or fails to
+// re-render, falls back to the more conservative line-based Line.
+func Document(content []byte, format string) string {
 	switch strings.ToLower(format) {
 	case "json":
 		var v any
@@ -39,7 +49,7 @@ func walk(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			if Key(k) {
+			if IsSecretKey(k) {
 				t[k] = Mask
 			} else {
 				t[k] = walk(val)
@@ -48,7 +58,7 @@ func walk(v any) any {
 		return t
 	case map[any]any:
 		for k, val := range t {
-			if ks, ok := k.(string); ok && Key(ks) {
+			if ks, ok := k.(string); ok && IsSecretKey(ks) {
 				t[k] = Mask
 			} else {
 				t[k] = walk(val)
@@ -64,6 +74,10 @@ func walk(v any) any {
 	return v
 }
 
+// Line redacts s line by line without parsing it: any line shaped like
+// "key: value" whose key IsSecretKey reports secret has its value replaced
+// with a quoted Mask. Lines without a colon, or with an empty value, pass
+// through unchanged.
 func Line(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, ln := range lines {
@@ -73,7 +87,7 @@ func Line(s string) string {
 		}
 		key := strings.ToLower(strings.TrimSpace(ln[:idx]))
 		val := strings.TrimSpace(ln[idx+1:])
-		if val == "" || !Key(key) {
+		if val == "" || !IsSecretKey(key) {
 			continue
 		}
 		lines[i] = ln[:idx] + `: "` + Mask + `"`
@@ -137,7 +151,13 @@ func fusedSecret(segs []string) bool {
 	return false
 }
 
-func Key(k string) bool {
+// IsSecretKey reports whether a config key names a secret. The key is split
+// into letter/digit segments and matched against secret vocabulary (secret,
+// password, token, apikey, ...). Selector-style keys are exempt: a soft
+// subject like "token" or "secrets" followed by a selector segment such as
+// env, id, backend, service or name (e.g. "token_env", "secrets.backend")
+// names where a secret lives, not the secret itself, and is not redacted.
+func IsSecretKey(k string) bool {
 	segs := segments(k)
 	if len(segs) == 0 {
 		return false

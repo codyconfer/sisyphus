@@ -200,7 +200,7 @@ func TestFatalStopsRunnerThatIgnoresRunWait(t *testing.T) {
 
 func TestServiceConfigInstallsRunWaitHook(t *testing.T) {
 	p := newProgram(func(context.Context) error { return nil })
-	cfg := serviceConfig(Config{Name: "munin", UserService: true}, p)
+	cfg := serviceConfig(Config{Name: "munin", Scope: ScopeUser}, p)
 	wait, ok := cfg.Option[optionRunWait].(func())
 	if !ok {
 		t.Fatalf("RunWait option = %T, want func()", cfg.Option[optionRunWait])

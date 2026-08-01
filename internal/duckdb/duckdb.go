@@ -1,3 +1,7 @@
+// Package duckdb is the shared DuckDB plumbing under every sisyphus store:
+// opening files owner-only (database and WAL alike), the Handle that
+// coordinates single-writer access across processes via sidecar lock files,
+// and small SQL helpers (NULL adapters, QueryTable).
 package duckdb
 
 import (
@@ -15,6 +19,10 @@ import (
 // this package — so its mode has to be corrected after the fact.
 const walSuffix = ".wal"
 
+// Open opens (or creates) the DuckDB file at path with a single connection,
+// applies schema when non-empty, and narrows the database and its WAL to
+// owner-only permissions. Lock errors are tagged so errors.Is(err, ErrLocked)
+// matches. Most callers should go through a Handle rather than call this.
 func Open(ctx context.Context, path, schema string) (*sql.DB, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -65,6 +73,8 @@ func secureWAL(path string) error {
 	return securePerm(path + walSuffix)
 }
 
+// NullTime adapts t for a nullable TIMESTAMP argument: SQL NULL for the zero
+// time, t itself otherwise.
 func NullTime(t time.Time) any {
 	if t.IsZero() {
 		return nil
@@ -72,6 +82,8 @@ func NullTime(t time.Time) any {
 	return t
 }
 
+// NullInt adapts v for a nullable BIGINT argument: SQL NULL for 0, v
+// otherwise.
 func NullInt(v int64) any {
 	if v == 0 {
 		return nil
@@ -79,6 +91,8 @@ func NullInt(v int64) any {
 	return v
 }
 
+// NullStr adapts v for a nullable VARCHAR argument: SQL NULL for the empty
+// string, v otherwise.
 func NullStr(v string) any {
 	if v == "" {
 		return nil

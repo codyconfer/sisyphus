@@ -75,12 +75,12 @@ func TestPersistentDeduperSurvivesRestart(t *testing.T) {
 
 	ctx := context.Background()
 	first := NewPersistentDeduper(ctx, id, store, "seen")
-	if out := first.Fresh(ctx, []string{"a", "b"}); len(out) != 0 {
+	if out := first.Unseen(ctx, []string{"a", "b"}); len(out) != 0 {
 		t.Fatalf("first run should baseline (emit nothing), got %v", out)
 	}
 
 	restarted := NewPersistentDeduper(ctx, id, store, "seen")
-	out := restarted.Fresh(ctx, []string{"a", "b", "c"})
+	out := restarted.Unseen(ctx, []string{"a", "b", "c"})
 	if len(out) != 1 || out[0] != "c" {
 		t.Fatalf("after restart only new items should emit, got %v", out)
 	}
@@ -92,17 +92,17 @@ func TestPersistentDeduperEmptyBaselineSurvivesRestart(t *testing.T) {
 
 	ctx := context.Background()
 	first := NewPersistentDeduper(ctx, id, store, "seen")
-	if out := first.Fresh(ctx, nil); len(out) != 0 {
+	if out := first.Unseen(ctx, nil); len(out) != 0 {
 		t.Fatalf("first run should baseline (emit nothing), got %v", out)
 	}
 
 	restarted := NewPersistentDeduper(ctx, id, store, "seen")
-	if out := restarted.Fresh(ctx, []string{"a"}); len(out) != 1 || out[0] != "a" {
+	if out := restarted.Unseen(ctx, []string{"a"}); len(out) != 1 || out[0] != "a" {
 		t.Fatalf("after empty-baseline restart, new item should emit, got %v", out)
 	}
 
 	again := NewPersistentDeduper(ctx, id, store, "seen")
-	if out := again.Fresh(ctx, []string{"a", seenInitKey}); len(out) != 1 || out[0] != seenInitKey {
+	if out := again.Unseen(ctx, []string{"a", seenInitKey}); len(out) != 1 || out[0] != seenInitKey {
 		t.Fatalf("marker must stay out of the seen set; an item keyed as the marker must emit, got %v", out)
 	}
 }

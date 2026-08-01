@@ -43,11 +43,11 @@ func TestRecordWhileAnotherProcessHoldsJournal(t *testing.T) {
 	}
 	defer s.Close()
 
-	id, err := s.Begin(ctx, "flight", "morning", nil)
+	id, err := s.StartRun(ctx, "flight", "morning", nil)
 	if err != nil {
 		t.Fatalf("begin while another process holds the journal: %v", err)
 	}
-	if err := s.RollUp(ctx, id); err != nil {
+	if err := s.FinishRun(ctx, id); err != nil {
 		t.Fatalf("rollup: %v", err)
 	}
 	if elapsed := time.Since(start); elapsed > childHold/2 {
@@ -74,7 +74,7 @@ func holdForChild(t *testing.T, path string) {
 		t.Fatalf("child open: %v", err)
 	}
 	defer s.Close()
-	if _, err := s.Begin(ctx, "flight", "child", nil); err != nil {
+	if _, err := s.StartRun(ctx, "flight", "child", nil); err != nil {
 		t.Fatalf("child begin: %v", err)
 	}
 	if err := os.WriteFile(path+".childready", []byte("1"), 0o600); err != nil {

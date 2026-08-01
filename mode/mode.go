@@ -11,10 +11,14 @@ import (
 type Mode string
 
 const (
-	ModeCLI    Mode = "cli"
-	ModeServe  Mode = "serve"
+	// ModeCLI is a one-shot foreground command.
+	ModeCLI Mode = "cli"
+	// ModeServe is a long-running foreground server; needs daemon support.
+	ModeServe Mode = "serve"
+	// ModeDaemon is a background service; needs daemon support.
 	ModeDaemon Mode = "daemon"
-	ModeDeck   Mode = "deck"
+	// ModeDeck is an interactive dashboard surface.
+	ModeDeck Mode = "deck"
 )
 
 // ErrUnsupportedMode is returned by Gate for a mode this build cannot run.
@@ -36,9 +40,24 @@ func Supported(m Mode) bool {
 type AuthState int
 
 const (
+	// AuthUnauthenticated means no valid identity or login.
 	AuthUnauthenticated AuthState = iota
+	// AuthUnauthorized means authenticated but missing a required approval,
+	// membership, scope, or onboarding step.
 	AuthUnauthorized
+	// AuthAuthorized means fully allowed.
 	AuthAuthorized
+)
+
+// Policy decides what happens with the error a CLIUnauthorized hook returns.
+type Policy int
+
+const (
+	// PolicyWarn (the zero value) discards the CLIUnauthorized error and lets
+	// the command continue.
+	PolicyWarn Policy = iota
+	// PolicyBlock propagates the CLIUnauthorized error and blocks execution.
+	PolicyBlock
 )
 
 // GateHooks are injectable policy callbacks. GitHub (or other) policy lives in
@@ -50,10 +69,12 @@ type GateHooks struct {
 	// CLIUnauthenticated runs guided auth for CLI mode (e.g. login + onboard).
 	CLIUnauthenticated func(ctx context.Context) error
 	// CLIUnauthorized is called when authenticated but not fully authorized.
-	// If AllOrNothingAuth is true and this returns an error, the gate fails.
+	// If UnauthorizedPolicy is PolicyBlock and this returns an error, the
+	// gate fails.
 	CLIUnauthorized func(ctx context.Context) error
-	// AllOrNothingAuth, when true, makes CLIUnauthorized errors block execution.
-	AllOrNothingAuth bool
+	// UnauthorizedPolicy, when PolicyBlock, makes CLIUnauthorized errors block
+	// execution. The default, PolicyWarn, discards them.
+	UnauthorizedPolicy Policy
 
 	// ServeUnauthorized warns (non-fatal) when serve mode is not authorized.
 	ServeUnauthorized func(ctx context.Context) error
@@ -100,7 +121,7 @@ func Gate(ctx context.Context, m Mode, hooks GateHooks) error {
 		case AuthUnauthorized:
 			if hooks.CLIUnauthorized != nil {
 				err := hooks.CLIUnauthorized(ctx)
-				if hooks.AllOrNothingAuth {
+				if hooks.UnauthorizedPolicy == PolicyBlock {
 					return err
 				}
 				return nil

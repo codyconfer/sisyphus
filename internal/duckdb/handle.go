@@ -391,10 +391,17 @@ func writePid(f *os.File) {
 	}
 }
 
+// Lock is a held cross-process lock on a database's sidecar lock file,
+// acquired without opening the database itself.
 type Lock struct {
 	f *os.File
 }
 
+// AcquireLock takes the sidecar lock beside the database at path, waiting up
+// to timeout for the current holder (whose pid ends up in the error message)
+// to let go, and records this process's pid in the lock file. It lets a
+// caller such as restore fence off a database file it is about to replace
+// without opening it. Release the lock when done.
 func AcquireLock(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
 	f, err := flockSidecar(ctx, path, timeout)
 	if err != nil {
@@ -404,6 +411,8 @@ func AcquireLock(ctx context.Context, path string, timeout time.Duration) (*Lock
 	return &Lock{f: f}, nil
 }
 
+// Release unlocks and closes the lock file. It is safe on a nil *Lock and
+// when called more than once.
 func (l *Lock) Release() {
 	if l == nil || l.f == nil {
 		return

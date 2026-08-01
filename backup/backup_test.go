@@ -6,32 +6,34 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/codyconfer/sisyphus/internal/crypt"
 )
 
 func TestEncryptRoundTrip(t *testing.T) {
-	key, err := NewKey()
+	key, err := crypt.NewKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	plain := []byte("duckdb bytes here")
-	sealed, err := Encrypt(plain, key)
+	sealed, err := crypt.Encrypt(plain, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(sealed, plain) {
 		t.Fatal("ciphertext should not contain plaintext")
 	}
-	got, err := Decrypt(sealed, key)
+	got, err := crypt.Decrypt(sealed, key)
 	if err != nil || !bytes.Equal(got, plain) {
 		t.Fatalf("round trip = %q, %v", got, err)
 	}
 }
 
 func TestDecryptWrongKeyFails(t *testing.T) {
-	k1, _ := NewKey()
-	k2, _ := NewKey()
-	sealed, _ := Encrypt([]byte("secret"), k1)
-	if _, err := Decrypt(sealed, k2); err == nil {
+	k1, _ := crypt.NewKey()
+	k2, _ := crypt.NewKey()
+	sealed, _ := crypt.Encrypt([]byte("secret"), k1)
+	if _, err := crypt.Decrypt(sealed, k2); err == nil {
 		t.Fatal("decrypt with the wrong key must fail (GCM auth)")
 	}
 }
@@ -47,7 +49,7 @@ func TestArchiveRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entries, err := Extract(arc)
+	entries, err := extract(arc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,12 +77,12 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	os.WriteFile(filepath.Join(src, "config.duckdb"), []byte("CFG"), 0o600)
 	os.WriteFile(filepath.Join(src, "tokens.duckdb"), []byte("TOK"), 0o600)
 
-	key, _ := NewKey()
+	key, _ := crypt.NewKey()
 	arc, err := Archive(context.Background(), []string{filepath.Join(src, "config.duckdb"), filepath.Join(src, "tokens.duckdb")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := Encrypt(arc, key)
+	sealed, err := crypt.Encrypt(arc, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,10 +106,10 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 func TestRestoreWrongKeyFails(t *testing.T) {
 	src := t.TempDir()
 	os.WriteFile(filepath.Join(src, "a.duckdb"), []byte("x"), 0o600)
-	k1, _ := NewKey()
+	k1, _ := crypt.NewKey()
 	arc, _ := Archive(context.Background(), []string{filepath.Join(src, "a.duckdb")})
-	sealed, _ := Encrypt(arc, k1)
-	k2, _ := NewKey()
+	sealed, _ := crypt.Encrypt(arc, k1)
+	k2, _ := crypt.NewKey()
 	if _, err := Restore(context.Background(), sealed, k2, t.TempDir()); err == nil {
 		t.Fatal("restore with wrong key must fail")
 	}
@@ -116,9 +118,9 @@ func TestRestoreWrongKeyFails(t *testing.T) {
 func TestRestoreHonorsCancel(t *testing.T) {
 	src := t.TempDir()
 	os.WriteFile(filepath.Join(src, "a.duckdb"), []byte("x"), 0o600)
-	key, _ := NewKey()
+	key, _ := crypt.NewKey()
 	arc, _ := Archive(context.Background(), []string{filepath.Join(src, "a.duckdb")})
-	sealed, _ := Encrypt(arc, key)
+	sealed, _ := crypt.Encrypt(arc, key)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := Restore(ctx, sealed, key, t.TempDir()); err == nil {
@@ -127,17 +129,17 @@ func TestRestoreHonorsCancel(t *testing.T) {
 }
 
 func TestEncryptBadKeyLength(t *testing.T) {
-	if _, err := Encrypt([]byte("x"), make([]byte, 16)); err == nil {
+	if _, err := crypt.Encrypt([]byte("x"), make([]byte, 16)); err == nil {
 		t.Fatal("expected error for wrong key length")
 	}
-	if _, err := Decrypt(make([]byte, 100), make([]byte, 16)); err == nil {
+	if _, err := crypt.Decrypt(make([]byte, 100), make([]byte, 16)); err == nil {
 		t.Fatal("expected error for wrong key length")
 	}
 }
 
 func TestDecryptShortCiphertext(t *testing.T) {
-	key, _ := NewKey()
-	if _, err := Decrypt([]byte{1, 2, 3}, key); err == nil {
+	key, _ := crypt.NewKey()
+	if _, err := crypt.Decrypt([]byte{1, 2, 3}, key); err == nil {
 		t.Fatal("expected error for short ciphertext")
 	}
 }

@@ -21,10 +21,8 @@ func TestBackupRestoreThroughKeyring(t *testing.T) {
 	}
 
 	sealed, storeName, err := Backup(context.Background(), BackupSpec{
-		Files:         []string{filepath.Join(src, "config.duckdb"), filepath.Join(src, "tokens.duckdb")},
-		SecretBackend: "keyring",
-		SecretService: "testapp",
-		SecretName:    "backup-key",
+		Files:  []string{filepath.Join(src, "config.duckdb"), filepath.Join(src, "tokens.duckdb")},
+		Secret: SecretRef{Backend: "keyring", Service: "testapp", Name: "backup-key"},
 	})
 	if err != nil {
 		t.Fatalf("Backup: %v", err)
@@ -35,11 +33,9 @@ func TestBackupRestoreThroughKeyring(t *testing.T) {
 
 	dst := t.TempDir()
 	names, _, err := Restore(context.Background(), RestoreSpec{
-		Sealed:        sealed,
-		SecretBackend: "keyring",
-		SecretService: "testapp",
-		SecretName:    "backup-key",
-		DestDir:       dst,
+		Sealed:  sealed,
+		Secret:  SecretRef{Backend: "keyring", Service: "testapp", Name: "backup-key"},
+		DestDir: dst,
 	})
 	if err != nil {
 		t.Fatalf("Restore: %v", err)
@@ -55,11 +51,9 @@ func TestBackupRestoreThroughKeyring(t *testing.T) {
 func TestRestoreMissingKeyFails(t *testing.T) {
 	keyring.MockInit()
 	_, _, err := Restore(context.Background(), RestoreSpec{
-		Sealed:        []byte("whatever"),
-		SecretBackend: "keyring",
-		SecretService: "testapp",
-		SecretName:    "absent-key",
-		DestDir:       t.TempDir(),
+		Sealed:  []byte("whatever"),
+		Secret:  SecretRef{Backend: "keyring", Service: "testapp", Name: "absent-key"},
+		DestDir: t.TempDir(),
 	})
 	if err == nil {
 		t.Fatal("expected error when key is absent")

@@ -24,12 +24,14 @@ type DeviceCode struct {
 
 // DeviceFlowOptions configures a device-code grant.
 type DeviceFlowOptions struct {
-	ClientID     string
-	Scope        string
-	CodeURL      string
-	TokenURL     string
-	Product      string
-	HTTPClient   *http.Client
+	ClientID   string
+	Scope      string
+	CodeURL    string
+	TokenURL   string
+	Product    string
+	HTTPClient *http.Client
+	// Open, if set, opens the verification URL in a browser. When nil, no
+	// browser is opened; the flow still prints the URL and user code.
 	Open         func(url string) error
 	PollInterval time.Duration
 	// Sleep is used between polls (defaults to time.Sleep). Tests inject a stub.
@@ -50,10 +52,6 @@ func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (acce
 	client := opts.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
-	}
-	open := opts.Open
-	if open == nil {
-		open = OpenURL
 	}
 	sleep := opts.Sleep
 	if sleep == nil {
@@ -78,7 +76,9 @@ func DeviceToken(ctx context.Context, w io.Writer, opts DeviceFlowOptions) (acce
 	}
 	fmt.Fprintf(w, "\nTo authorize %s, open %s\nand enter the code: %s\n\nWaiting for authorization…\n",
 		product, uri, dc.UserCode)
-	_ = open(uri)
+	if opts.Open != nil {
+		_ = opts.Open(uri)
+	}
 
 	interval := time.Duration(dc.Interval) * time.Second
 	if interval <= 0 {

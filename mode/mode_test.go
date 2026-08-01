@@ -29,23 +29,23 @@ func TestGateCLIUnauthorizedDefault(t *testing.T) {
 		CLIUnauthorized: func(context.Context) error {
 			return errors.New("not ready")
 		},
-		AllOrNothingAuth: false,
+		UnauthorizedPolicy: PolicyWarn,
 	}
 	if err := Gate(context.Background(), ModeCLI, hooks); err != nil {
 		t.Fatalf("default unauthorized should not fail: %v", err)
 	}
 }
 
-func TestGateCLIUnauthorizedAllOrNothing(t *testing.T) {
+func TestGateCLIUnauthorizedPolicyBlock(t *testing.T) {
 	hooks := GateHooks{
 		Classify: func(context.Context) AuthState { return AuthUnauthorized },
 		CLIUnauthorized: func(context.Context) error {
 			return errors.New("not ready")
 		},
-		AllOrNothingAuth: true,
+		UnauthorizedPolicy: PolicyBlock,
 	}
 	if err := Gate(context.Background(), ModeCLI, hooks); err == nil {
-		t.Fatal("all-or-nothing auth should reject unauthorized cli")
+		t.Fatal("PolicyBlock should reject unauthorized cli")
 	}
 }
 

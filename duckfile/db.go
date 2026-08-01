@@ -1,46 +1,44 @@
-package store
+// Package duckfile owns plugin-scoped DuckDB files: each plugin opens its own
+// database with its own schema and queries it through string tables.
+package duckfile
 
 import (
 	"context"
 	"database/sql"
-	"errors"
-	"time"
 
+	"github.com/codyconfer/sisyphus/duckopt"
 	"github.com/codyconfer/sisyphus/internal/duckdb"
+	"github.com/codyconfer/sisyphus/storeerr"
+	"github.com/codyconfer/sisyphus/tabular"
 )
 
 // ErrUnavailable is returned when a method is called on a nil or closed DB.
-var ErrUnavailable = errors.New("store unavailable")
+// It is the shared storeerr.ErrUnavailable, so both errors.Is checks match.
+var ErrUnavailable = storeerr.ErrUnavailable
 
-// DB is a plugin-owned DuckDB file opened with an optional schema. Paths should
-// be included in the app backup set.
+// Result is a tabular ad-hoc query response.
+type Result = tabular.Result
+
+// DB is a plugin-owned DuckDB file opened with an optional schema. Paths
+// should be included in the app backup set: call RegisterBackupPath for every
+// database the app must back up — Open does not register anything itself.
+//
+// A nil *DB is a valid no-op: Path reports "", Query and Exec return
+// ErrUnavailable, and Close returns nil.
 type DB struct {
 	h *duckdb.Handle
 }
 
 // Open opens (or creates) a DuckDB database at path, applying schema when
 // non-empty. The file is chmod 0600 and limited to a single writer.
-type Option func(*duckdb.Options)
-
-func WithIdle(d time.Duration) Option { return func(o *duckdb.Options) { o.Idle = d } }
-
-func WithTimeout(d time.Duration) Option { return func(o *duckdb.Options) { o.Timeout = d } }
-
-func WithMaxHold(d time.Duration) Option { return func(o *duckdb.Options) { o.MaxHold = d } }
-
-func Open(ctx context.Context, path, schema string, opts ...Option) (*DB, error) {
+func Open(ctx context.Context, path, schema string, opts ...duckopt.Option) (*DB, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	o := duckdb.Options{Unavailable: ErrUnavailable}
-	for _, fn := range opts {
-		fn(&o)
-	}
-	h := duckdb.NewHandle(path, schema, o)
+	h := duckdb.NewHandle(path, schema, duckdb.OptionsFrom(duckopt.Build(opts...), ErrUnavailable))
 	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
-	RegisterBackupPath(path)
 	return &DB{h: h}, nil
 }
 
@@ -52,6 +50,8 @@ func (d *DB) Path() string {
 	return d.h.Path()
 }
 
+// Close releases the database. It is safe on a nil *DB and returns nil.
+// Closing is terminal: further Query and Exec calls return ErrUnavailable.
 func (d *DB) Close() error {
 	if d == nil {
 		return nil
@@ -67,7 +67,7 @@ func (d *DB) Query(ctx context.Context, query string, args ...any) (Result, erro
 	var res Result
 	err := d.h.Do(ctx, func(db *sql.DB) error {
 		var err error
-		res, err = queryDB(ctx, db, query, args...)
+		res, err = duckdb.QueryTable(ctx, db, query, args...)
 		return err
 	})
 	if err != nil {

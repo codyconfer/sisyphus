@@ -15,15 +15,12 @@ import (
 	"github.com/Microsoft/go-winio"
 )
 
-var ErrInUse = errors.New("address already in use")
-
 const dialProbeTimeout = 200 * time.Millisecond
-
-const DefaultPipePrefix = "sisyphus"
 
 func pipeName(prefix, name string) string {
 	if prefix == "" {
-		prefix = DefaultPipePrefix
+		// No library-supplied product name: an anonymous but stable fallback.
+		prefix = "pipe"
 	}
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(name))

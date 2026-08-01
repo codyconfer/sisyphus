@@ -1,3 +1,8 @@
+// Package sealed is an encrypted credential store: Entry values are
+// AES-256-GCM sealed and kept in a kv.Store, with the encryption key
+// escrowed in the OS keyring (or supplied by the caller). A value that does
+// not decrypt and authenticate under the current key is an error
+// (ErrUndecodable), never a cleartext fallback.
 package sealed
 
 import (
@@ -9,13 +14,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codyconfer/sisyphus/backup"
+	"github.com/codyconfer/sisyphus/internal/crypt"
 	"github.com/codyconfer/sisyphus/kv"
 	"github.com/codyconfer/sisyphus/secret"
+	"github.com/codyconfer/sisyphus/storeerr"
 )
 
 // ErrUnavailable is returned when a method is called on a nil or closed store.
-var ErrUnavailable = errors.New("sealed store unavailable")
+// It wraps storeerr.ErrUnavailable, so both errors.Is checks match.
+var ErrUnavailable = fmt.Errorf("sealed %w", storeerr.ErrUnavailable)
 
 // ErrUndecodable is returned when a stored value exists but cannot be decrypted
 // with the current key, so callers can tell a lost key from a missing entry.
@@ -59,6 +66,9 @@ type Options struct {
 
 // Store is an encrypted key/value store backed by kv.Store. Values are AES-GCM
 // sealed; the encryption key is escrowed in the OS keyring (or KeyProvider).
+//
+// A nil *Store is a valid no-op: Get, Put and Delete return ErrUnavailable,
+// and Close returns nil.
 type Store struct {
 	mu          sync.RWMutex
 	kv          *kv.Store
@@ -68,6 +78,10 @@ type Store struct {
 	key         []byte
 }
 
+// Open opens (or creates) the backing kv database at path. Empty Options
+// fields get defaults: Namespace "sealed", KeyringService "sisyphus", and
+// KeyName "sealed-key". The encryption key is not touched here — it is
+// fetched (and created on first use) lazily, on the first Get or Put.
 func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 	ns := opts.Namespace
 	if ns == "" {
@@ -95,12 +109,12 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 }
 
 func keyringKey(ctx context.Context, service, keyName string) ([]byte, error) {
-	store, err := secret.Resolve(ctx, "keyring", service)
+	store, err := secret.Open(ctx, secret.BackendKeyring, service)
 	if err != nil {
 		return nil, err
 	}
 	v, err := secret.GetOrCreate(ctx, store, keyName, func() (string, error) {
-		k, err := backup.NewKey()
+		k, err := crypt.NewKey()
 		if err != nil {
 			return "", err
 		}
@@ -121,6 +135,8 @@ func (s *Store) handle() *kv.Store {
 	return s.kv
 }
 
+// Close releases the backing database. It is safe on a nil *Store and when
+// called more than once; both return nil.
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
@@ -173,7 +189,7 @@ func (s *Store) Get(ctx context.Context, name string) (Entry, bool, error) {
 	if derr != nil {
 		return Entry{}, false, fmt.Errorf("%w: %w", ErrUndecodable, derr)
 	}
-	plain, derr := backup.Decrypt(raw, key)
+	plain, derr := crypt.Decrypt(raw, key)
 	if derr != nil {
 		return Entry{}, false, fmt.Errorf("%w: %w", ErrUndecodable, derr)
 	}
@@ -184,6 +200,9 @@ func (s *Store) Get(ctx context.Context, name string) (Entry, bool, error) {
 	return out, true, nil
 }
 
+// Put seals e and stores it under name, replacing any existing entry.
+// e.TTL becomes the underlying row's expiry (zero keeps it forever); e.Expiry
+// is payload only and never deletes the record.
 func (s *Store) Put(ctx context.Context, name string, e Entry) error {
 	k := s.handle()
 	if k == nil {
@@ -197,7 +216,7 @@ func (s *Store) Put(ctx context.Context, name string, e Entry) error {
 	if err != nil {
 		return err
 	}
-	sealed, err := backup.Encrypt(b, key)
+	sealed, err := crypt.Encrypt(b, key)
 	if err != nil {
 		return err
 	}
@@ -205,6 +224,8 @@ func (s *Store) Put(ctx context.Context, name string, e Entry) error {
 	return k.Put(ctx, s.ns, name, v, e.TTL)
 }
 
+// Delete removes the entry stored under name. Deleting a missing entry is
+// not an error.
 func (s *Store) Delete(ctx context.Context, name string) error {
 	k := s.handle()
 	if k == nil {

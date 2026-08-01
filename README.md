@@ -20,14 +20,14 @@ database. DuckDB-backed packages require CGO (via
 
 | Package | Responsibility |
 |---|---|
-| `sisyphus` (root) | `Manager` facade for config reconciliation + package-level `Backup`/`Restore`. |
+| `sisyphus` (root) | `ConfigStore` facade for config reconciliation + package-level `Backup`/`Restore`. |
 | `sisyphus/config` | Home-dir resolution and parsing a YAML/JSON file into your struct (with env overrides). |
 | `sisyphus/configdb` | Versioned, name-keyed blob store in DuckDB (`store_current` + `store_history`) — the source of truth for file-backed state. |
 | `sisyphus/kv` | Generic namespaced key/value store in DuckDB, with an optional TTL column. |
 | `sisyphus/journal` | Generic activity log in DuckDB: nested parent/child runs + records, each with a free-form string attribute map. |
 | `sisyphus/secret` | Key escrow via the Bitwarden (`bw`) or 1Password (`op`) CLI, or the OS keyring. |
 | `sisyphus/backup` | tar archive + AES-256-GCM encrypt/decrypt/restore. |
-| `sisyphus/store` | Ad-hoc DuckDB file queries (read-only at the app layer). |
+| `sisyphus/duckfile` | Plugin-owned DuckDB files + ad-hoc queries (read-only at the app layer). |
 | `sisyphus/sealed` | Encrypted credential store (AES-GCM over `kv`; key in OS keyring). |
 | `sisyphus/auth` | OAuth loopback · device flow · `RunTool` CLI helper. |
 | `sisyphus/mode` | Operating modes + injectable auth gate hooks. |
@@ -51,32 +51,38 @@ Everything application-specific is injected, never baked in:
 - **Env prefix** — `config.ParseInto(target, raw, format, envPrefix)`.
 - **KV namespace** — a parameter on every `kv` call.
 - **Config DB filename** — `Options.ConfigDBName` (defaults to `config.duckdb`).
-- **Keyring service name** — `secret.Resolve(backend, service)` (defaults to
-  `"sisyphus"`); backup threads it via `BackupSpec.SecretService`.
+- **Keyring service name** — `secret.Open(backend, service)` (defaults to
+  `"sisyphus"`); backup threads it via `BackupSpec.Secret.Service`.
 - **Backup file list + secret name** — supplied on `BackupSpec` / `RestoreSpec`.
 
 ## Usage
 
 ### Config reconciliation
 
-`Manager` makes DuckDB the source of truth for file-backed config, and never
-auto-imports — you decide via a `Resolver` when file and DB disagree.
+`ConfigStore` makes DuckDB the source of truth for file-backed config, and
+never auto-imports — you decide via `Plan`/`Apply` when file and DB disagree.
 
 ```go
 ctx := context.Background()
-m, err := sisyphus.Open(ctx, home, sisyphus.Options{}) // ModeBoth; ConfigDBName defaults to config.duckdb
+m, err := sisyphus.Open(ctx, home, sisyphus.Options{}) // BackendBoth; ConfigDBName defaults to config.duckdb
 if err != nil { /* ... */ }
 defer m.Close()
 
 raw, format, _ := config.ReadFile(home)
-content, format, err := m.Reconcile(ctx, "config", raw, format, len(raw) > 0, myResolver)
+item := sisyphus.Item{Name: "config", FileContent: raw, FileFormat: format}
+drifted, _ := m.Plan(ctx, item)
+for _, rec := range drifted {
+    _, _, _ = m.Apply(ctx, rec, decide(rec)) // your Action per document
+}
+content, format, err := m.Effective(ctx, item)
 // then: config.ParseInto(&myCfg, content, format, "MYAPP_")
 ```
 
-`Reconcile` returns the DB content when file and DB match, and otherwise calls
-`Resolver.Resolve` with an `Action` (`ActionImport` / `ActionUseFile` /
-`ActionUseDB`). `Manager.Current/Import/History` cover the common config-DB
-operations; `DB()` exposes the underlying `*configdb.Store` for anything more.
+`Plan` returns one `Reconciliation` per document that has drifted; you resolve
+each with `Apply` and an `Action` (`ActionImport` / `ActionUseFile` /
+`ActionUseDB`), then read the result with `Effective`.
+`ConfigStore.Current/Import/History/Forget` cover the common config-DB
+operations.
 
 ### Authorization gates
 
@@ -89,16 +95,16 @@ current account state to:
   membership, scope, or onboarding step.
 - `AuthAuthorized` — fully allowed.
 
-`AllOrNothingAuth` is not a global "require authentication" switch. It affects
-only an unauthorized CLI user: when `CLIUnauthorized` returns an error,
-`AllOrNothingAuth: true` propagates that error and blocks the command;
-`AllOrNothingAuth: false` discards it and allows the command to continue.
+`UnauthorizedPolicy` is not a global "require authentication" switch. It
+affects only an unauthorized CLI user: when `CLIUnauthorized` returns an
+error, `PolicyBlock` propagates that error and blocks the command;
+`PolicyWarn` (the zero value) discards it and allows the command to continue.
 
 | Mode and state | `Gate` behavior |
 |---|---|
 | CLI, unauthenticated | Runs `CLIUnauthenticated`; any error blocks. |
-| CLI, unauthorized, default policy | Runs `CLIUnauthorized`, discards its error, and continues. |
-| CLI, unauthorized, all-or-nothing auth | Runs `CLIUnauthorized`; any error blocks. |
+| CLI, unauthorized, `PolicyWarn` (default) | Runs `CLIUnauthorized`, discards its error, and continues. |
+| CLI, unauthorized, `PolicyBlock` | Runs `CLIUnauthorized`; any error blocks. |
 | CLI, authorized | Continues without calling an auth hook. |
 | Serve or daemon, not authorized | Runs the corresponding hook; return `nil` to warn and continue, or an error to block. |
 | Serve or daemon, `nodaemon` build | Returns `ErrUnsupportedMode` without calling any hook. |
@@ -113,7 +119,7 @@ err := mode.Gate(ctx, mode.ModeCLI, mode.GateHooks{
     CLIUnauthorized: func(context.Context) error {
         return errors.New("account is not approved")
     },
-    AllOrNothingAuth: true,
+    UnauthorizedPolicy: mode.PolicyBlock,
 })
 if err != nil {
     return err // stop before running the command
@@ -169,22 +175,25 @@ and stays available, because none of it requires a service to be running.
 ```go
 ctx := context.Background()
 sealed, store, err := sisyphus.Backup(ctx, sisyphus.BackupSpec{
-    Files:         []string{cfgDB, dataDB},
-    SecretBackend: "auto",       // bw → op → OS keyring
-    SecretService: "myapp",      // keyring service name
-    SecretName:    "backup-key", // key entry name
+    Files: []string{cfgDB, dataDB},
+    Secret: sisyphus.SecretRef{
+        Backend: "auto",       // bw → op → OS keyring
+        Service: "myapp",      // keyring service name
+        Name:    "backup-key", // key entry name
+    },
 })
 // ... write `sealed` somewhere ...
 
 names, _, err := sisyphus.Restore(ctx, sisyphus.RestoreSpec{
-    Sealed: sealed, SecretBackend: "auto", SecretService: "myapp",
-    SecretName: "backup-key", DestDir: home,
+    Sealed:  sealed,
+    Secret:  sisyphus.SecretRef{Backend: "auto", Service: "myapp", Name: "backup-key"},
+    DestDir: home,
 })
 ```
 
 The AES key is generated on first backup and escrowed in the secret manager; it
 never travels with the archive, and `Backup`/`Restore` are package functions
-independent of `Manager` so restore works even when the config DB is corrupt.
+independent of `ConfigStore` so restore works even when the config DB is corrupt.
 
 ### KV and journal
 
@@ -195,9 +204,9 @@ _ = store.Put(ctx, "tokens", "github", jsonBlob, time.Time{}) // zero time = no 
 entry, ok, _ := store.Get(ctx, "tokens", "github")
 
 log, _ := journal.Open(ctx, filepath.Join(home, "audit.duckdb"))
-parent, _ := log.Begin(ctx, "job", "nightly", map[string]string{"env": "prod"})
+parent, _ := log.StartRun(ctx, "job", "nightly", map[string]string{"env": "prod"})
 _, _ = log.Add(ctx, journal.Run{ParentID: parent, Kind: "step", Name: "sync", Count: 3}, records)
-_ = log.RollUp(ctx, parent) // roll child counts up into the parent
+_ = log.FinishRun(ctx, parent) // stamp finished; roll child counts up into the parent
 ```
 
 ## Development

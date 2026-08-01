@@ -15,8 +15,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const DefaultPipePrefix = "sisyphus"
-
 const dialProbeTimeout = 200 * time.Millisecond
 
 const (
@@ -24,8 +22,13 @@ const (
 	lockRetryInterval  = 50 * time.Millisecond
 )
 
-var ErrInUse = errors.New("address already in use")
-
+// Listen binds the service endpoint. On Unix systems name is a filesystem
+// path for a Unix socket and prefix is ignored; on Windows the pair names a
+// named pipe. The socket is owner-only (0600). A stale socket file left by a
+// dead process is detected by probing and replaced, while a live listener —
+// or a non-socket file at name — makes Listen fail, the former wrapped in
+// ErrInUse. Closing the listener removes the socket file only if it is still
+// the one this listener bound.
 func Listen(prefix, name string) (net.Listener, error) {
 	_ = prefix
 	lock, err := lockSocketPath(name)
@@ -164,6 +167,11 @@ func dialConn(ctx context.Context, prefix, name string) (net.Conn, error) {
 	return d.DialContext(ctx, "unix", name)
 }
 
+// IsListening reports whether something accepts connections at the service
+// endpoint, by dialing it. It is a raw probe that ignores build capability:
+// prefer Attached, which returns false outright in nodaemon builds and only
+// then delegates here, and reach for IsListening directly only when you want
+// the probe regardless of build.
 func IsListening(prefix, name string) bool {
 	_ = prefix
 	conn, err := net.Dial("unix", name)

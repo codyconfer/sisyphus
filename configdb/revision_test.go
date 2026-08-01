@@ -51,8 +51,8 @@ func TestBumpConcurrentWritersDoNotClobberEachOther(t *testing.T) {
 	if failed > 0 {
 		t.Fatalf("%d of %d concurrent bumps failed", failed, writers*rounds)
 	}
-	if rev, ok := s.Revision(); !ok || rev == "" {
-		t.Fatalf("Revision() after concurrent bumps = %q, %v", rev, ok)
+	if rev, ok := s.Generation(); !ok || rev == "" {
+		t.Fatalf("Generation() after concurrent bumps = %q, %v", rev, ok)
 	}
 	if left := stagingLeftovers(t, s); len(left) != 0 {
 		t.Fatalf("staging files left behind: %v", left)
@@ -68,8 +68,8 @@ func TestBumpIgnoresFixedTempPath(t *testing.T) {
 	if err := s.bump("after-the-temp-path-is-taken"); err != nil {
 		t.Fatalf("bump through a shared temp path: %v", err)
 	}
-	if rev, ok := s.Revision(); !ok || rev == "" {
-		t.Fatalf("Revision() = %q, %v", rev, ok)
+	if rev, ok := s.Generation(); !ok || rev == "" {
+		t.Fatalf("Generation() = %q, %v", rev, ok)
 	}
 }
 
@@ -92,8 +92,8 @@ func TestBumpFailureReportsCommittedChange(t *testing.T) {
 	if err == nil {
 		t.Fatal("bump reported success with an unwritable directory")
 	}
-	if !errors.Is(err, ErrRevisionMarker) {
-		t.Fatalf("bump error = %v, want one matching ErrRevisionMarker", err)
+	if !errors.Is(err, ErrGenerationMarker) {
+		t.Fatalf("bump error = %v, want one matching ErrGenerationMarker", err)
 	}
 }
 

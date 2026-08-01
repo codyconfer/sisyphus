@@ -55,23 +55,23 @@ var mustNotMask = []string{
 	"top_wd", "dump_wd", "bot_pid", "hot_pink",
 }
 
-func TestKeyMasksEverySecretSpelling(t *testing.T) {
+func TestIsSecretKeyMasksEverySecretSpelling(t *testing.T) {
 	for _, k := range mustMask {
-		if !Key(k) {
-			t.Errorf("Key(%q) = false, want true: this key carries a credential and must be masked", k)
+		if !IsSecretKey(k) {
+			t.Errorf("IsSecretKey(%q) = false, want true: this key carries a credential and must be masked", k)
 		}
 	}
 }
 
-func TestKeyLeavesEveryNonSecretReadable(t *testing.T) {
+func TestIsSecretKeyLeavesEveryNonSecretReadable(t *testing.T) {
 	for _, k := range mustNotMask {
-		if Key(k) {
-			t.Errorf("Key(%q) = true, want false: masking a non-secret corrupts an exported config", k)
+		if IsSecretKey(k) {
+			t.Errorf("IsSecretKey(%q) = true, want false: masking a non-secret corrupts an exported config", k)
 		}
 	}
 }
 
-func TestKeyTablesAreDisjoint(t *testing.T) {
+func TestIsSecretKeyTablesAreDisjoint(t *testing.T) {
 	seen := make(map[string]string, len(mustMask)+len(mustNotMask))
 	for _, k := range mustMask {
 		seen[strings.ToLower(k)] = "mask"
@@ -108,20 +108,20 @@ var muninDirectiveTags = []string{
 	"title", "template", "formatter",
 }
 
-func TestKeyAgainstMuninConfigTags(t *testing.T) {
+func TestIsSecretKeyAgainstMuninConfigTags(t *testing.T) {
 	for tag, want := range muninKoanfTags {
-		if got := Key(tag); got != want {
-			t.Errorf("Key(%q) = %v, want %v: munin/internal/config/types.go koanf tag landed on the wrong side", tag, got, want)
+		if got := IsSecretKey(tag); got != want {
+			t.Errorf("IsSecretKey(%q) = %v, want %v: munin/internal/config/types.go koanf tag landed on the wrong side", tag, got, want)
 		}
 	}
 	for _, tag := range muninDirectiveTags {
-		if Key(tag) {
-			t.Errorf("Key(%q) = true, want false: directive field names are not secrets", tag)
+		if IsSecretKey(tag) {
+			t.Errorf("IsSecretKey(%q) = true, want false: directive field names are not secrets", tag)
 		}
 	}
 }
 
-func TestKeySelectorExemptionRequiresWholeTrailingSegment(t *testing.T) {
+func TestIsSecretKeySelectorExemptionRequiresWholeTrailingSegment(t *testing.T) {
 	pairs := []struct {
 		selector string
 		fused    string
@@ -136,34 +136,34 @@ func TestKeySelectorExemptionRequiresWholeTrailingSegment(t *testing.T) {
 		{"token_id", "tokenid"},
 	}
 	for _, p := range pairs {
-		if Key(p.selector) {
-			t.Errorf("Key(%q) = true, want false: the trailing segment names where a secret lives", p.selector)
+		if IsSecretKey(p.selector) {
+			t.Errorf("IsSecretKey(%q) = true, want false: the trailing segment names where a secret lives", p.selector)
 		}
-		if !Key(p.fused) {
-			t.Errorf("Key(%q) = false, want true: a fused word is not a segmented selector", p.fused)
+		if !IsSecretKey(p.fused) {
+			t.Errorf("IsSecretKey(%q) = false, want true: a fused word is not a segmented selector", p.fused)
 		}
 	}
 }
 
-func TestKeyExemptionIsVoidedByAHardSecretSegment(t *testing.T) {
+func TestIsSecretKeyExemptionIsVoidedByAHardSecretSegment(t *testing.T) {
 	for _, k := range []string{
 		"secret_key_name", "password_name", "password_env", "session_id",
 		"cookie_id", "credential_id", "apikey_name", "salt_name", "otp_id",
 	} {
-		if !Key(k) {
-			t.Errorf("Key(%q) = false, want true: an exempt tail must not shelter a hard secret term", k)
+		if !IsSecretKey(k) {
+			t.Errorf("IsSecretKey(%q) = false, want true: an exempt tail must not shelter a hard secret term", k)
 		}
 	}
 }
 
-func TestConfigYAMLNested(t *testing.T) {
+func TestDocumentYAMLNested(t *testing.T) {
 	in := []byte(strings.Join([]string{
 		"google:",
 		"  oauth_client_id: Iv1.public",
 		"  oauth_client_secret: super-secret-value",
 		"output: terminal",
 	}, "\n"))
-	got := Config(in, "yaml")
+	got := Document(in, "yaml")
 
 	if strings.Contains(got, "super-secret-value") {
 		t.Error("nested oauth_client_secret was not masked")
@@ -179,9 +179,9 @@ func TestConfigYAMLNested(t *testing.T) {
 	}
 }
 
-func TestConfigJSON(t *testing.T) {
+func TestDocumentJSON(t *testing.T) {
 	in := []byte(`{"github":{"api_key":"ghp_leak","api_url":"https://api.github.com"}}`)
-	got := Config(in, "json")
+	got := Document(in, "json")
 
 	if strings.Contains(got, "ghp_leak") {
 		t.Error("api_key was not masked")
@@ -194,9 +194,9 @@ func TestConfigJSON(t *testing.T) {
 	}
 }
 
-func TestConfigMultiLineValue(t *testing.T) {
+func TestDocumentMultiLineValue(t *testing.T) {
 	in := []byte("private_key: |\n  line-one\n  line-two\nname: bob\n")
-	got := Config(in, "yaml")
+	got := Document(in, "yaml")
 
 	if strings.Contains(got, "line-one") || strings.Contains(got, "line-two") {
 		t.Error("multi-line private_key was not masked")
@@ -206,7 +206,7 @@ func TestConfigMultiLineValue(t *testing.T) {
 	}
 }
 
-func TestConfigKeepsBackupSelectorsUsable(t *testing.T) {
+func TestDocumentKeepsBackupSelectorsUsable(t *testing.T) {
 	in := []byte(strings.Join([]string{
 		"backup:",
 		"  secret_backend: keyring",
@@ -216,7 +216,7 @@ func TestConfigKeepsBackupSelectorsUsable(t *testing.T) {
 		"  oauth_client_secret: super-secret-value",
 		"",
 	}, "\n"))
-	got := Config(in, "yaml")
+	got := Document(in, "yaml")
 
 	if !strings.Contains(got, "keyring") {
 		t.Errorf("secret_backend value was masked; a redacted config would break backups:\n%s", got)
@@ -254,7 +254,7 @@ func TestLineKeepsBackupSelectorsUsable(t *testing.T) {
 	}
 }
 
-func TestConfigMasksHyphenatedAndWebhookKeys(t *testing.T) {
+func TestDocumentMasksHyphenatedAndWebhookKeys(t *testing.T) {
 	in := []byte(strings.Join([]string{
 		"github:",
 		"  api-key: DASHKEY",
@@ -269,7 +269,7 @@ func TestConfigMasksHyphenatedAndWebhookKeys(t *testing.T) {
 		"  oauth_client_secret: super-secret-value",
 		"",
 	}, "\n"))
-	got := Config(in, "yaml")
+	got := Document(in, "yaml")
 
 	for _, leak := range []string{"DASHKEY", "T/B/XYZ", "T/B/ABC", "super-secret-value"} {
 		if strings.Contains(got, leak) {
@@ -283,7 +283,7 @@ func TestConfigMasksHyphenatedAndWebhookKeys(t *testing.T) {
 	}
 }
 
-func TestConfigMasksSessionAndNameSelectorLookalikes(t *testing.T) {
+func TestDocumentMasksSessionAndNameSelectorLookalikes(t *testing.T) {
 	in := []byte(strings.Join([]string{
 		"sessionid: SESSIONBEARER",
 		"secretname: FUSEDNAME",
@@ -297,7 +297,7 @@ func TestConfigMasksSessionAndNameSelectorLookalikes(t *testing.T) {
 		"hot_patch: true",
 		"",
 	}, "\n"))
-	got := Config(in, "yaml")
+	got := Document(in, "yaml")
 
 	for _, leak := range []string{"SESSIONBEARER", "FUSEDNAME", "PWNAME", "KEYNAME", "TOKID"} {
 		if strings.Contains(got, leak) {
@@ -335,26 +335,26 @@ func TestLineMasksHyphenatedAndWebhookKeys(t *testing.T) {
 	}
 }
 
-func TestConfigAndLineAgreeWithKey(t *testing.T) {
+func TestDocumentAndLineAgreeWithIsSecretKey(t *testing.T) {
 	for _, k := range append(append([]string{}, mustMask...), mustNotMask...) {
 		if strings.ContainsAny(k, ":\n") || strings.TrimSpace(k) != k {
 			continue
 		}
 		doc := k + ": PROBEVALUE"
-		wantMasked := Key(k)
+		wantMasked := IsSecretKey(k)
 
 		if gotMasked := !strings.Contains(Line(doc), "PROBEVALUE"); gotMasked != wantMasked {
-			t.Errorf("Line(%q) masked = %v, but Key(%q) = %v: Line must agree with Key", doc, gotMasked, k, wantMasked)
+			t.Errorf("Line(%q) masked = %v, but IsSecretKey(%q) = %v: Line must agree with IsSecretKey", doc, gotMasked, k, wantMasked)
 		}
-		if gotMasked := !strings.Contains(Config([]byte(doc+"\n"), "yaml"), "PROBEVALUE"); gotMasked != wantMasked {
-			t.Errorf("Config(%q) masked = %v, but Key(%q) = %v: Config must agree with Key", doc, gotMasked, k, wantMasked)
+		if gotMasked := !strings.Contains(Document([]byte(doc+"\n"), "yaml"), "PROBEVALUE"); gotMasked != wantMasked {
+			t.Errorf("Document(%q) masked = %v, but IsSecretKey(%q) = %v: Document must agree with IsSecretKey", doc, gotMasked, k, wantMasked)
 		}
 	}
 }
 
-func TestConfigNonSecretUnchanged(t *testing.T) {
+func TestDocumentNonSecretUnchanged(t *testing.T) {
 	in := []byte("output: terminal\ntoken_env: SLACK_TOKEN\n")
-	got := Config(in, "yaml")
+	got := Document(in, "yaml")
 
 	if strings.Contains(got, Mask) {
 		t.Errorf("no secret keys present; nothing should be masked:\n%s", got)
@@ -364,10 +364,10 @@ func TestConfigNonSecretUnchanged(t *testing.T) {
 	}
 }
 
-func TestKeyEmptyAndPunctuationOnly(t *testing.T) {
+func TestIsSecretKeyEmptyAndPunctuationOnly(t *testing.T) {
 	for _, k := range []string{"", "   ", "_", "-", "...", "__--__"} {
-		if Key(k) {
-			t.Errorf("Key(%q) = true, want false: no segments means no secret", k)
+		if IsSecretKey(k) {
+			t.Errorf("IsSecretKey(%q) = true, want false: no segments means no secret", k)
 		}
 	}
 }

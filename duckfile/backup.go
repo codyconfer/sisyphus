@@ -1,4 +1,4 @@
-package store
+package duckfile
 
 import "sync"
 
@@ -8,7 +8,9 @@ var (
 )
 
 // RegisterBackupPath records a plugin DB path for inclusion in encrypted
-// backups. Apps should union these with core paths when calling Backup.
+// backups. Registration is explicit: Open never registers a path itself, so
+// plugins (or the host) decide which databases join the backup set. Apps
+// should union these with core paths when calling Backup.
 func RegisterBackupPath(path string) {
 	if path == "" {
 		return

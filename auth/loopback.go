@@ -15,18 +15,14 @@ import (
 
 const defaultLoopbackTimeout = 3 * time.Minute
 
-// OpenURL opens a URL in the user's browser. Tests may override.
-var OpenURL = func(url string) error {
-	return errors.New("no browser opener configured")
-}
-
 // LoopbackOptions configures an OAuth authorization-code loopback.
 type LoopbackOptions struct {
 	// Product is shown in the callback page and terminal prompt (e.g. "munin").
 	Product string
 	// Timeout defaults to 3 minutes.
 	Timeout time.Duration
-	// Open, if set, opens the auth URL (defaults to OpenURL).
+	// Open, if set, opens the auth URL in a browser. When nil, no browser is
+	// opened; the flow still prints the URL and waits for the callback.
 	Open func(url string) error
 }
 
@@ -41,11 +37,6 @@ func LoopbackAuthCode(ctx context.Context, w io.Writer, service string, opts Loo
 	if timeout <= 0 {
 		timeout = defaultLoopbackTimeout
 	}
-	open := opts.Open
-	if open == nil {
-		open = OpenURL
-	}
-
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return "", "", fmt.Errorf("starting local callback server: %w", err)
@@ -87,7 +78,9 @@ func LoopbackAuthCode(ctx context.Context, w io.Writer, service string, opts Loo
 
 	authURL := buildURL(redirect, state)
 	fmt.Fprintf(w, "\nOpen this URL to authorize %s for %s:\n\n  %s\n\nWaiting for authorization…\n", product, service, authURL)
-	_ = open(authURL)
+	if opts.Open != nil {
+		_ = opts.Open(authURL)
+	}
 
 	select {
 	case <-ctx.Done():

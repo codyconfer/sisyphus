@@ -13,10 +13,15 @@ type Watermark struct {
 	key string
 }
 
+// NewWatermark returns a Watermark stored under ns/key in store. A nil store
+// gives a no-op watermark: Load returns the zero time and Save returns nil.
 func NewWatermark(store KV, ns, key string) *Watermark {
 	return &Watermark{kv: store, ns: ns, key: key}
 }
 
+// Load returns the saved stamp at second precision. Like Cursor.Load it has
+// no error result: a read failure, a missing entry, and an unparsable value
+// all come back as the zero time, so schedulers fall back to "never ran".
 func (w *Watermark) Load(ctx context.Context) time.Time {
 	if w == nil || w.kv == nil {
 		return time.Time{}
@@ -32,6 +37,8 @@ func (w *Watermark) Load(ctx context.Context) time.Time {
 	return time.Unix(unix, 0)
 }
 
+// Save stores t as the new stamp, truncated to whole seconds (it is kept as
+// a Unix timestamp).
 func (w *Watermark) Save(ctx context.Context, t time.Time) error {
 	if w == nil || w.kv == nil {
 		return nil

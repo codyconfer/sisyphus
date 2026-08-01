@@ -19,29 +19,29 @@ func TestRevisionChangesOnWrite(t *testing.T) {
 	}
 	defer s.Close()
 
-	if _, ok := s.Revision(); ok {
-		t.Fatal("Revision() reported a marker before any write")
+	if _, ok := s.Generation(); ok {
+		t.Fatal("Generation() reported a marker before any write")
 	}
 	if err := s.Import(ctx, "config", []byte("a: 1\n"), "yaml"); err != nil {
 		t.Fatalf("import: %v", err)
 	}
-	first, ok := s.Revision()
+	first, ok := s.Generation()
 	if !ok || first == "" {
-		t.Fatalf("Revision() after import = %q, %v", first, ok)
+		t.Fatalf("Generation() after import = %q, %v", first, ok)
 	}
 	if err := s.Import(ctx, "config", []byte("a: 2\n"), "yaml"); err != nil {
 		t.Fatalf("second import: %v", err)
 	}
-	second, _ := s.Revision()
+	second, _ := s.Generation()
 	if second == first {
-		t.Fatalf("Revision() unchanged across writes: %q", second)
+		t.Fatalf("Generation() unchanged across writes: %q", second)
 	}
 	if err := s.Forget(ctx, "config"); err != nil {
 		t.Fatalf("forget: %v", err)
 	}
-	third, _ := s.Revision()
+	third, _ := s.Generation()
 	if third == second {
-		t.Fatalf("Revision() unchanged across Forget: %q", third)
+		t.Fatalf("Generation() unchanged across Forget: %q", third)
 	}
 }
 
@@ -77,7 +77,7 @@ func TestApplyWhileAnotherProcessHoldsStore(t *testing.T) {
 	}
 	defer s.Close()
 
-	before, _ := s.Revision()
+	before, _ := s.Generation()
 	if err := s.Import(ctx, "config", []byte("role: work\n"), "yaml"); err != nil {
 		t.Fatalf("import while another process holds the store: %v", err)
 	}
@@ -85,12 +85,12 @@ func TestApplyWhileAnotherProcessHoldsStore(t *testing.T) {
 		t.Fatalf("open+import took %s against a live holder; the store is not being released between operations", elapsed)
 	}
 
-	after, ok := s.Revision()
+	after, ok := s.Generation()
 	if !ok {
-		t.Fatal("Revision() reported no marker after import")
+		t.Fatal("Generation() reported no marker after import")
 	}
 	if after == before {
-		t.Fatalf("Revision() unchanged after import: %q", after)
+		t.Fatalf("Generation() unchanged after import: %q", after)
 	}
 
 	v, found, err := s.Current(ctx, "config")

@@ -1,180 +1,48 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/codyconfer/sisyphus/internal/fsutil"
 )
 
-var collectionExts = []string{".yaml", ".yml", ".json"}
-
-func SerializeDir(dir string) (blob []byte, has bool, err error) {
-	files, err := collectionFiles(dir)
-	if err != nil {
-		return nil, false, err
-	}
-	if len(files) == 0 {
-		return nil, false, nil
-	}
-	c := make(map[string]string, len(files))
-	for _, p := range files {
-		data, rerr := os.ReadFile(p)
-		if rerr != nil {
-			return nil, false, fmt.Errorf("reading %s: %w", p, rerr)
-		}
-		c[filepath.Base(p)] = string(data)
-	}
-	blob, err = json.Marshal(c)
-	return blob, true, err
-}
-
-func WriteCollection(dir string, blob []byte) (names []string, err error) {
-	files := map[string]string{}
-	if err := json.Unmarshal(blob, &files); err != nil {
-		return nil, fmt.Errorf("decoding collection blob: %w", err)
-	}
-	if err := EnsureDir(dir); err != nil {
-		return nil, err
-	}
-	names = make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if name == "." || name == ".." || name != filepath.Base(name) {
-			return nil, fmt.Errorf("invalid collection entry name %q", name)
-		}
-		path := filepath.Join(dir, name)
-		if err := writeAtomic(path, []byte(files[name])); err != nil {
-			return nil, fmt.Errorf("writing %s: %w", path, err)
-		}
-	}
-	return names, nil
-}
-
-func collectionFiles(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading %s: %w", dir, err)
-	}
-	var files []string
-	for _, e := range entries {
-		if e.IsDir() || !hasExt(e.Name(), collectionExts) {
-			continue
-		}
-		files = append(files, filepath.Join(dir, e.Name()))
-	}
-	sort.Strings(files)
-	return files, nil
-}
-
-func WriteConfigFile(home string, content []byte, format string) (string, error) {
+// WriteConfigFile writes content as home's root config file, named for its
+// format (config.yaml or config.json), and returns the written path.
+func WriteConfigFile(home string, content []byte, format Format) (string, error) {
 	name := "config.yaml"
-	if format == "json" {
+	if format == FormatJSON {
 		name = "config.json"
 	}
 	return WriteItem(home, name, content)
 }
 
+// WriteItem atomically writes content to dir/filename (mode 0600), creating
+// dir as needed, and returns the written path.
 func WriteItem(dir, filename string, content []byte) (string, error) {
 	if err := EnsureDir(dir); err != nil {
 		return "", err
 	}
 	path := filepath.Join(dir, filename)
-	if err := writeAtomic(path, content); err != nil {
+	if err := fsutil.WriteAtomic(path, content); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	return path, nil
 }
 
+// OpenAppend opens path for appending, creating it (and its directory) with
+// owner-only permissions.
 func OpenAppend(path string) (*os.File, error) {
-	if err := EnsureDir(filepath.Dir(path)); err != nil {
-		return nil, err
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("opening %s: %w", path, err)
-	}
-	return f, nil
+	return fsutil.OpenAppend(path)
 }
 
-func AppendItem(dir, filename string, content []byte) (string, error) {
-	path := filepath.Join(dir, filename)
-	_, statErr := os.Lstat(path)
-	created := os.IsNotExist(statErr)
-	f, err := OpenAppend(path)
-	if err != nil {
-		return "", err
-	}
-	if _, err := f.Write(content); err != nil {
-		f.Close()
-		return "", fmt.Errorf("appending %s: %w", path, err)
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return "", fmt.Errorf("appending %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return "", fmt.Errorf("appending %s: %w", path, err)
-	}
-	if created {
-		syncDir(filepath.Dir(path))
-	}
-	return path, nil
-}
-
-func writeAtomic(path string, content []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer func() {
-		tmp.Close()
-		// Best-effort: after a successful rename there is nothing left to remove.
-		_ = os.Remove(name)
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return err
-	}
-	if _, err := tmp.Write(content); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(name, path); err != nil {
-		return err
-	}
-	syncDir(filepath.Dir(path))
-	return nil
-}
-
-// syncDir flushes a directory entry so a completed rename survives a crash:
-// without it the file contents are durable but the name may still be the old one.
-// Directory fsync is not portable, so this is best effort by design.
-func syncDir(dir string) {
-	d, err := os.Open(dir)
-	if err != nil {
-		return
-	}
-	defer d.Close()
-	_ = d.Sync()
-}
-
-func ReadFileAt(path string) (raw []byte, format string, err error) {
+// ReadFileAt reads one config file at an explicit path, reporting its format
+// from the extension.
+func ReadFileAt(path string) (raw []byte, format Format, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", fmt.Errorf("reading %s: %w", path, err)
@@ -182,6 +50,8 @@ func ReadFileAt(path string) (raw []byte, format string, err error) {
 	return data, formatOf(path), nil
 }
 
+// ReadRaw reads path, reporting a missing file as ok=false rather than an
+// error.
 func ReadRaw(path string) (raw []byte, ok bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -193,9 +63,11 @@ func ReadRaw(path string) (raw []byte, ok bool, err error) {
 	return data, true, nil
 }
 
+// RemoveFiles removes dir/base+ext for each ext (the collection extensions
+// when exts is empty), ignoring files that do not exist.
 func RemoveFiles(dir, base string, exts []string) (removed []string, err error) {
 	if len(exts) == 0 {
-		exts = collectionExts
+		exts = fsutil.CollectionExts
 	}
 	for _, ext := range exts {
 		p := filepath.Join(dir, base+ext)
@@ -211,6 +83,7 @@ func RemoveFiles(dir, base string, exts []string) (removed []string, err error) 
 	return removed, nil
 }
 
+// RemoveItem removes path, ignoring a file that does not exist.
 func RemoveItem(path string) error {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing %s: %w", path, err)
@@ -218,47 +91,24 @@ func RemoveItem(path string) error {
 	return nil
 }
 
-func ClearDir(dir string, exts []string) (removed []string, err error) {
-	if len(exts) == 0 {
-		exts = collectionExts
-	}
-	entries, rerr := os.ReadDir(dir)
-	if rerr != nil {
-		if os.IsNotExist(rerr) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading %s: %w", dir, rerr)
-	}
-	for _, e := range entries {
-		if e.IsDir() || !hasExt(e.Name(), exts) {
-			continue
-		}
-		p := filepath.Join(dir, e.Name())
-		if err := os.Remove(p); err != nil {
-			return removed, fmt.Errorf("removing %s: %w", p, err)
-		}
-		removed = append(removed, p)
-	}
-	return removed, nil
-}
-
+// EnsureDir creates path (and parents) with owner-only permissions.
 func EnsureDir(path string) error {
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return fmt.Errorf("creating %s: %w", path, err)
-	}
-	return nil
+	return fsutil.EnsureDir(path)
 }
 
+// Exists reports whether path exists.
 func Exists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
 
+// IsFile reports whether path exists and is not a directory.
 func IsFile(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && !fi.IsDir()
 }
 
+// IsDir reports whether path exists and is a directory.
 func IsDir(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && fi.IsDir()
@@ -322,6 +172,8 @@ func newArchiveDir(root, stamp string) (string, error) {
 	return "", fmt.Errorf("too many archives under %s for %s", root, stamp)
 }
 
+// Archive moves the named home-relative entries into a timestamped directory
+// under home/.archive, returning the archive directory and what moved.
 func Archive(home string, entries []string) (dest string, moved []string, err error) {
 	cleaned := make([]string, 0, len(entries))
 	for _, name := range entries {
@@ -363,20 +215,11 @@ func Archive(home string, entries []string) (dest string, moved []string, err er
 	return dest, moved, nil
 }
 
+// UserConfigPath returns name under the OS user config directory for app.
 func UserConfigPath(app, name string) (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving user config dir: %w", err)
 	}
 	return filepath.Join(dir, app, name), nil
-}
-
-func hasExt(name string, exts []string) bool {
-	ext := strings.ToLower(filepath.Ext(name))
-	for _, e := range exts {
-		if ext == e {
-			return true
-		}
-	}
-	return false
 }

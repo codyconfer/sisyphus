@@ -1,3 +1,6 @@
+// Package lifecycle holds home-directory install, clean and nuke primitives,
+// plus a small shell-hook runner (Scripts / Select / Run*) for the bash or
+// PowerShell snippets an application lets its users attach to those moments.
 package lifecycle
 
 import (
@@ -18,9 +21,6 @@ type Scripts struct {
 // RunFunc executes a shell script with the given interpreter kind
 // ("bash" or "powershell").
 type RunFunc func(kind, script string) error
-
-// Run is the process-level shell runner; tests may replace it.
-var Run = DefaultRun
 
 // Select picks which script to run for the current platform.
 // Preference: bash on Unix, PowerShell on Windows. If the preferred script is
@@ -47,14 +47,22 @@ func Select(s Scripts) (kind, script string, ok bool) {
 	return "", "", false
 }
 
-// RunScripts runs the selected script for s, or nil when nothing to run.
-// Missing interpreters return an error; callers typically warn and continue.
+// RunScripts runs the selected script for s with DefaultRun, or nil when
+// nothing to run. Missing interpreters return an error; callers typically
+// warn and continue.
 func RunScripts(s Scripts) error {
+	return RunScriptsWith(s, DefaultRun)
+}
+
+// RunScriptsWith runs the selected script for s using run, or nil when
+// nothing to run. Callers inject run to stub execution in tests or to
+// customize how scripts are executed.
+func RunScriptsWith(s Scripts, run RunFunc) error {
 	kind, script, ok := Select(s)
 	if !ok {
 		return nil
 	}
-	return Run(kind, script)
+	return run(kind, script)
 }
 
 // DefaultRun executes script with the named interpreter.

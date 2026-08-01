@@ -1,15 +1,22 @@
+// Package journal is a generic activity log in a single DuckDB file: runs
+// (optionally nested one level, parent/child) and per-run records, each
+// carrying a free-form string attribute map. Retention is explicit — Prune by
+// age or Retain by count — and rewrites the tables so the file actually
+// shrinks.
 package journal
 
 import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/codyconfer/sisyphus/duckopt"
 	"github.com/codyconfer/sisyphus/internal/duckdb"
+	"github.com/codyconfer/sisyphus/storeerr"
+	"github.com/codyconfer/sisyphus/tabular"
 )
 
 const runsColumns = `
@@ -44,8 +51,14 @@ const recordInsertPrefix = `INSERT INTO records (run_id, ts, attrs) VALUES `
 
 var fullRecordInsert = recordInsert(recordChunk)
 
-var ErrUnavailable = errors.New("journal store unavailable")
+// ErrUnavailable is returned when a method is called on a nil or closed store.
+// It wraps storeerr.ErrUnavailable, so both errors.Is checks match.
+var ErrUnavailable = fmt.Errorf("journal %w", storeerr.ErrUnavailable)
 
+// Run is one unit of logged activity. A Run with ParentID 0 is a top-level
+// (parent) run; a non-zero ParentID nests it under that parent. Count is the
+// run's own item count; FinishRun overwrites a parent's Count with the sum of
+// its children's.
 type Run struct {
 	ID       int64
 	ParentID int64
@@ -58,40 +71,35 @@ type Run struct {
 	Attrs    map[string]string
 }
 
+// Record is one timestamped detail row attached to a run, described entirely
+// by its attribute map.
 type Record struct {
 	Ts    time.Time
 	Attrs map[string]string
 }
 
-type Result struct {
-	Columns []string
-	Rows    [][]string
-}
+// Result is a tabular ad-hoc query response.
+type Result = tabular.Result
 
+// Store is an append-mostly run/record journal in one DuckDB file.
+//
+// A nil *Store is a valid no-op: every method returns ErrUnavailable, except
+// Close, which returns nil.
 type Store struct {
 	h *duckdb.Handle
 }
 
-type Option func(*duckdb.Options)
-
-func WithIdle(d time.Duration) Option { return func(o *duckdb.Options) { o.Idle = d } }
-
-func WithTimeout(d time.Duration) Option { return func(o *duckdb.Options) { o.Timeout = d } }
-
-func WithMaxHold(d time.Duration) Option { return func(o *duckdb.Options) { o.MaxHold = d } }
-
-func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
-	o := duckdb.Options{Unavailable: ErrUnavailable}
-	for _, fn := range opts {
-		fn(&o)
-	}
-	h := duckdb.NewHandle(path, schema, o)
+// Open opens (or creates) the journal's DuckDB file at path and ensures its
+// schema. The file is owner-only (0600) and single-writer.
+func Open(ctx context.Context, path string, opts ...duckopt.Option) (*Store, error) {
+	h := duckdb.NewHandle(path, schema, duckdb.OptionsFrom(duckopt.Build(opts...), ErrUnavailable))
 	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
 	return &Store{h: h}, nil
 }
 
+// Close releases the database. It is safe on a nil *Store and returns nil.
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
@@ -99,7 +107,10 @@ func (s *Store) Close() error {
 	return s.h.Close()
 }
 
-func (s *Store) Begin(ctx context.Context, kind, name string, attrs map[string]string) (int64, error) {
+// StartRun inserts an open top-level run (started now, not finished) and
+// returns its id, which children pass as Run.ParentID and the caller later
+// hands to FinishRun.
+func (s *Store) StartRun(ctx context.Context, kind, name string, attrs map[string]string) (int64, error) {
 	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
 	}
@@ -116,7 +127,10 @@ func (s *Store) Begin(ctx context.Context, kind, name string, attrs map[string]s
 	return id, nil
 }
 
-func (s *Store) RollUp(ctx context.Context, id int64) error {
+// FinishRun stamps the run's finished time and replaces its count with the
+// sum of its children's counts (0 when it has none). An id of 0 is a no-op,
+// so an early error path can finish a run it never started.
+func (s *Store) FinishRun(ctx context.Context, id int64) error {
 	if s == nil || s.h == nil {
 		return ErrUnavailable
 	}
@@ -132,6 +146,9 @@ func (s *Store) RollUp(ctx context.Context, id int64) error {
 	})
 }
 
+// Add inserts a completed run together with its records in one transaction
+// and returns the new run id. Unlike StartRun it stores run as given —
+// Started, Finished, Count, Error and ParentID all come from the caller.
 func (s *Store) Add(ctx context.Context, run Run, records []Record) (int64, error) {
 	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
@@ -198,6 +215,8 @@ func recordInsert(rows int) string {
 	return b.String()
 }
 
+// Delete removes the run, its child runs, and every record belonging to any
+// of them, in one transaction. An id of 0 is a no-op.
 func (s *Store) Delete(ctx context.Context, id int64) error {
 	if s == nil || s.h == nil {
 		return ErrUnavailable
@@ -234,6 +253,10 @@ const olderThan = `parent_id IS NULL AND started_at < ?`
 const beyondNewest = `parent_id IS NULL AND id NOT IN (
 	SELECT id FROM runs WHERE parent_id IS NULL ORDER BY started_at DESC, id DESC LIMIT ?)`
 
+// Prune deletes top-level runs started before the given time, along with
+// their children and records, and returns how many top-level runs went. When
+// anything is deleted the tables are rewritten and the database checkpointed
+// so the file shrinks. A zero time deletes nothing.
 func (s *Store) Prune(ctx context.Context, before time.Time) (int, error) {
 	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
@@ -244,6 +267,10 @@ func (s *Store) Prune(ctx context.Context, before time.Time) (int, error) {
 	return s.evict(ctx, olderThan, before)
 }
 
+// Retain keeps only the newest maxRuns top-level runs, deleting the rest
+// with their children and records, and returns how many top-level runs went.
+// Like Prune it compacts the file after deleting. maxRuns <= 0 deletes
+// nothing (it does not mean "delete everything").
 func (s *Store) Retain(ctx context.Context, maxRuns int) (int, error) {
 	if s == nil || s.h == nil {
 		return 0, ErrUnavailable
@@ -321,6 +348,8 @@ func rewriteTable(table, columns string) []string {
 	}
 }
 
+// Recent returns up to limit top-level runs, newest first (limit <= 0 means
+// 20). Child runs are not included; fetch them with Children.
 func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
 	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
@@ -332,6 +361,8 @@ func (s *Store) Recent(ctx context.Context, limit int) ([]Run, error) {
 		FROM runs WHERE parent_id IS NULL ORDER BY started_at DESC LIMIT ?`, limit)
 }
 
+// Children returns the child runs of parentID in start order. The returned
+// runs carry ParentID 0 because the query does not re-read it.
 func (s *Store) Children(ctx context.Context, parentID int64) ([]Run, error) {
 	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
@@ -340,6 +371,8 @@ func (s *Store) Children(ctx context.Context, parentID int64) ([]Run, error) {
 		FROM runs WHERE parent_id = ? ORDER BY started_at`, parentID)
 }
 
+// Get returns the run with the given id, reporting found=false (with a nil
+// error) when no such run exists.
 func (s *Store) Get(ctx context.Context, id int64) (Run, bool, error) {
 	if s == nil || s.h == nil {
 		return Run{}, false, ErrUnavailable
@@ -352,6 +385,7 @@ func (s *Store) Get(ctx context.Context, id int64) (Run, bool, error) {
 	return runs[0], true, nil
 }
 
+// Records returns the records attached to runID, newest first.
 func (s *Store) Records(ctx context.Context, runID int64) ([]Record, error) {
 	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
@@ -386,6 +420,10 @@ func (s *Store) Records(ctx context.Context, runID int64) ([]Record, error) {
 	return out, nil
 }
 
+// Query runs an arbitrary SQL statement against the journal database and
+// returns the rows as a string table. The SQL is passed to DuckDB verbatim —
+// nothing stops a destructive statement — so callers exposing this (e.g. to a
+// CLI) should treat it as read-only and restrict what they accept.
 func (s *Store) Query(ctx context.Context, query string, args ...any) (Result, error) {
 	if s == nil || s.h == nil {
 		return Result{}, ErrUnavailable
@@ -393,7 +431,7 @@ func (s *Store) Query(ctx context.Context, query string, args ...any) (Result, e
 	var res Result
 	err := s.h.Do(ctx, func(db *sql.DB) error {
 		var err error
-		res, err = queryDB(ctx, db, query, args...)
+		res, err = duckdb.QueryTable(ctx, db, query, args...)
 		return err
 	})
 	if err != nil {
@@ -433,51 +471,6 @@ func (s *Store) queryRuns(ctx context.Context, query string, args ...any) ([]Run
 		return nil, err
 	}
 	return out, nil
-}
-
-func queryDB(ctx context.Context, db *sql.DB, query string, args ...any) (Result, error) {
-	rows, err := db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return Result{}, err
-	}
-	defer rows.Close()
-	cols, err := rows.Columns()
-	if err != nil {
-		return Result{}, err
-	}
-	var data [][]string
-	for rows.Next() {
-		cells := make([]any, len(cols))
-		ptrs := make([]any, len(cols))
-		for i := range cells {
-			ptrs[i] = &cells[i]
-		}
-		if err := rows.Scan(ptrs...); err != nil {
-			return Result{}, err
-		}
-		row := make([]string, len(cols))
-		for i, c := range cells {
-			row[i] = cellString(c)
-		}
-		data = append(data, row)
-	}
-	if err := rows.Err(); err != nil {
-		return Result{}, err
-	}
-	return Result{Columns: cols, Rows: data}, nil
-}
-
-func cellString(v any) string {
-	switch t := v.(type) {
-	case nil:
-		return "NULL"
-	case []byte:
-		return string(t)
-	case string:
-		return t
-	default:
-		return fmt.Sprint(t)
-	}
 }
 
 func marshalAttrs(m map[string]string) any {

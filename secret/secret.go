@@ -1,3 +1,7 @@
+// Package secret escrows small string secrets (typically encryption keys) in
+// an external secret manager: the Bitwarden CLI (bw), the 1Password CLI
+// (op), or the OS keyring. Open selects the backend — BackendAuto probes
+// them in that order — and returns a uniform Store interface over it.
 package secret
 
 import (
@@ -7,6 +11,8 @@ import (
 	"strings"
 )
 
+// Store is one secret backend: named for messages, with get/set by key.
+// Get reports a missing key as found=false with a nil error.
 type Store interface {
 	Name() string
 	Get(ctx context.Context, key string) (value string, found bool, err error)
@@ -18,44 +24,74 @@ var (
 	opAvailable = opConfigured
 )
 
-var backends = []string{"auto", "bitwarden", "bw", "1password", "op", "keyring"}
+// Backend names a secret storage backend.
+type Backend string
 
+const (
+	// BackendAuto picks the first configured backend: Bitwarden, then
+	// 1Password, then the OS keyring. The empty string means the same.
+	BackendAuto Backend = "auto"
+	// BackendBitwarden uses the Bitwarden CLI (bw), which must be logged in
+	// and unlocked.
+	BackendBitwarden Backend = "bitwarden"
+	// Backend1Password uses the 1Password CLI (op), which must be signed in.
+	Backend1Password Backend = "1password"
+	// BackendKeyring uses the OS keyring under the service name given to Open.
+	BackendKeyring Backend = "keyring"
+)
+
+// Backends lists the canonical backend names accepted by Open.
 func Backends() []string {
-	out := make([]string, len(backends))
-	copy(out, backends)
-	return out
+	return []string{
+		string(BackendAuto),
+		string(BackendBitwarden),
+		string(Backend1Password),
+		string(BackendKeyring),
+	}
 }
 
-func ValidBackend(backend string) bool {
-	if backend == "" {
-		return true
+// ParseBackend maps a user-supplied backend name to a Backend. Besides the
+// canonical names from Backends it accepts the aliases "bw" (bitwarden) and
+// "op" (1password), and the empty string (auto).
+func ParseBackend(s string) (Backend, bool) {
+	switch s {
+	case "", string(BackendAuto):
+		return BackendAuto, true
+	case string(BackendBitwarden), "bw":
+		return BackendBitwarden, true
+	case string(Backend1Password), "op":
+		return Backend1Password, true
+	case string(BackendKeyring):
+		return BackendKeyring, true
+	default:
+		return "", false
 	}
-	for _, b := range backends {
-		if backend == b {
-			return true
-		}
-	}
-	return false
 }
 
-func Resolve(ctx context.Context, backend, service string) (Store, error) {
+// Open returns the Store for backend. Any spelling accepted by ParseBackend
+// (including the aliases and the empty string) is accepted here.
+func Open(ctx context.Context, backend Backend, service string) (Store, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	switch backend {
-	case "bitwarden", "bw":
+	b, ok := ParseBackend(string(backend))
+	if !ok {
+		return nil, fmt.Errorf("unknown secret backend %q (want one of: %s)", backend, strings.Join(Backends(), ", "))
+	}
+	switch b {
+	case BackendBitwarden:
 		if bwAvailable(ctx) {
 			return bwStore{}, nil
 		}
 		return nil, errors.New("bitwarden CLI (bw) is not configured/unlocked; run `bw login` and set BW_SESSION")
-	case "1password", "op":
+	case Backend1Password:
 		if opAvailable(ctx) {
 			return opStore{}, nil
 		}
 		return nil, errors.New("1Password CLI (op) is not configured; run `op signin`")
-	case "keyring":
+	case BackendKeyring:
 		return newKeyringStore(service), nil
-	case "", "auto":
+	default: // BackendAuto
 		switch {
 		case bwAvailable(ctx):
 			return bwStore{}, nil
@@ -64,11 +100,13 @@ func Resolve(ctx context.Context, backend, service string) (Store, error) {
 		default:
 			return newKeyringStore(service), nil
 		}
-	default:
-		return nil, fmt.Errorf("unknown secret backend %q (want one of: %s)", backend, strings.Join(Backends(), ", "))
 	}
 }
 
+// GetOrCreate returns the value stored under key, generating one with gen
+// and storing it when the key does not exist yet. It is a read-then-write,
+// not an atomic operation: two concurrent callers can each generate a value,
+// with the later Set winning.
 func GetOrCreate(ctx context.Context, s Store, key string, gen func() (string, error)) (string, error) {
 	v, ok, err := s.Get(ctx, key)
 	if err != nil {

@@ -2,6 +2,12 @@ package daemon
 
 import "context"
 
+// Subject is a fan-out broadcaster: values published with Next are delivered
+// to every current subscriber. Delivery is best-effort — a subscriber whose
+// channel buffer is full simply misses that value — so it suits status-style
+// streams where the latest value matters more than every value. All methods
+// are safe for concurrent use; a Subject starts its goroutine in NewSubject
+// and stops it at Close.
 type Subject[T any] struct {
 	sub   chan chan T
 	unsub chan (<-chan T)
@@ -10,6 +16,7 @@ type Subject[T any] struct {
 	done  chan struct{}
 }
 
+// NewSubject returns a running Subject with no subscribers.
 func NewSubject[T any]() *Subject[T] {
 	s := &Subject[T]{
 		sub:   make(chan chan T),
@@ -53,6 +60,11 @@ func (s *Subject[T]) run() {
 	}
 }
 
+// Subscribe registers a new subscriber and returns its channel, buffered to
+// buffer values (negative means 0). The channel is closed on Unsubscribe or
+// when the Subject closes; subscribing to a closed Subject returns an
+// already-closed channel. Values published while the buffer is full are
+// dropped for this subscriber.
 func (s *Subject[T]) Subscribe(buffer int) <-chan T {
 	if buffer < 0 {
 		buffer = 0
@@ -67,6 +79,8 @@ func (s *Subject[T]) Subscribe(buffer int) <-chan T {
 	}
 }
 
+// Unsubscribe removes the subscriber whose channel is c and closes it.
+// Unknown channels, and Subjects already closed, are ignored.
 func (s *Subject[T]) Unsubscribe(c <-chan T) {
 	select {
 	case s.unsub <- c:
@@ -74,6 +88,8 @@ func (s *Subject[T]) Unsubscribe(c <-chan T) {
 	}
 }
 
+// Next publishes v to every current subscriber, skipping any whose buffer is
+// full. On a closed Subject it does nothing.
 func (s *Subject[T]) Next(v T) {
 	select {
 	case s.pub <- v:
@@ -81,6 +97,8 @@ func (s *Subject[T]) Next(v T) {
 	}
 }
 
+// Pump publishes every value received on in until the channel closes or ctx
+// is cancelled. It blocks, so run it in its own goroutine.
 func (s *Subject[T]) Pump(ctx context.Context, in <-chan T) {
 	for {
 		select {
@@ -95,6 +113,8 @@ func (s *Subject[T]) Pump(ctx context.Context, in <-chan T) {
 	}
 }
 
+// Close stops the Subject and closes every subscriber channel. It does not
+// block and is safe to call more than once.
 func (s *Subject[T]) Close() {
 	select {
 	case s.stop <- struct{}{}:

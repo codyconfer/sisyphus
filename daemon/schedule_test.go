@@ -32,9 +32,9 @@ func TestScheduleCatchUpAndCancel(t *testing.T) {
 	var n atomic.Int32
 	go func() {
 		_ = Schedule(ctx, 10*time.Millisecond, ScheduleJob{
-			Next: func(context.Context, time.Time) (Due, error) {
+			Next: func(_ context.Context, now time.Time) (Due, error) {
 				if n.Load() == 0 {
-					return Due{Ready: true}, nil
+					return Due{At: now}, nil
 				}
 				return Due{At: time.Now().Add(time.Hour)}, nil
 			},
@@ -64,13 +64,13 @@ func TestScheduleContinuesAfterTransientErrors(t *testing.T) {
 	var nextCalls, runs atomic.Int32
 	go func() {
 		_ = Schedule(ctx, 5*time.Millisecond, ScheduleJob{
-			Next: func(context.Context, time.Time) (Due, error) {
+			Next: func(_ context.Context, now time.Time) (Due, error) {
 				n := nextCalls.Add(1)
 				if n < 3 {
 					return Due{}, errors.New("duckdb lock")
 				}
 				if runs.Load() == 0 {
-					return Due{Ready: true}, nil
+					return Due{At: now}, nil
 				}
 				return Due{At: time.Now().Add(time.Hour)}, nil
 			},
@@ -290,12 +290,12 @@ func TestScheduleResetsFailureStreakOnSuccess(t *testing.T) {
 		defer close(done)
 		_ = Schedule(ctx, interval, ScheduleJob{
 			Name: "flappy",
-			Next: func(context.Context, time.Time) (Due, error) {
+			Next: func(_ context.Context, now time.Time) (Due, error) {
 				switch attempt.Add(1) {
 				case 1, 2:
 					return Due{}, boom
 				case 3:
-					return Due{Ready: true}, nil
+					return Due{At: now}, nil
 				default:
 					return Due{}, boom
 				}

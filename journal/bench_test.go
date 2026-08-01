@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/codyconfer/sisyphus/duckopt"
 )
 
 const benchHoldBudget = time.Hour
@@ -44,7 +46,7 @@ func benchRun(count int) Run {
 
 func openBenchStore(b *testing.B, dir string) *Store {
 	b.Helper()
-	s, err := Open(context.Background(), filepath.Join(dir, "journal.duckdb"), WithMaxHold(benchHoldBudget))
+	s, err := Open(context.Background(), filepath.Join(dir, "journal.duckdb"), duckopt.WithMaxHold(benchHoldBudget))
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}

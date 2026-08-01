@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
+
+	"github.com/codyconfer/sisyphus/internal/crypt"
 )
 
 var errInjected = errors.New("injected rename failure")
@@ -180,11 +182,11 @@ func TestRestorePlacesAWALEntryWithItsDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, err := NewKey()
+	key, err := crypt.NewKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := Encrypt(tarOf(t, map[string][]byte{"h.duckdb": main, "h.duckdb.wal": wal}), key)
+	sealed, err := crypt.Encrypt(tarOf(t, map[string][]byte{"h.duckdb": main, "h.duckdb.wal": wal}), key)
 	if err != nil {
 		t.Fatal(err)
 	}

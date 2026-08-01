@@ -48,17 +48,15 @@ func TestSelectEmpty(t *testing.T) {
 	}
 }
 
-func TestRunScriptsUsesRunner(t *testing.T) {
+func TestRunScriptsWithUsesRunner(t *testing.T) {
 	var gotKind, gotScript string
-	orig := Run
-	Run = func(kind, script string) error {
+	run := func(kind, script string) error {
 		gotKind, gotScript = kind, script
 		return nil
 	}
-	t.Cleanup(func() { Run = orig })
 
 	s := Scripts{Bash: "echo hi", PowerShell: "Write-Host hi"}
-	if err := RunScripts(s); err != nil {
+	if err := RunScriptsWith(s, run); err != nil {
 		t.Fatal(err)
 	}
 	wantKind, wantScript, _ := Select(s)
@@ -67,23 +65,19 @@ func TestRunScriptsUsesRunner(t *testing.T) {
 	}
 }
 
-func TestRunScriptsNoopWhenEmpty(t *testing.T) {
-	orig := Run
-	Run = func(string, string) error {
+func TestRunScriptsWithNoopWhenEmpty(t *testing.T) {
+	run := func(string, string) error {
 		t.Fatal("runner should not be called")
 		return nil
 	}
-	t.Cleanup(func() { Run = orig })
-	if err := RunScripts(Scripts{}); err != nil {
+	if err := RunScriptsWith(Scripts{}, run); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestRunScriptsPropagatesError(t *testing.T) {
-	orig := Run
-	Run = func(string, string) error { return errors.New("boom") }
-	t.Cleanup(func() { Run = orig })
-	err := RunScripts(Scripts{Bash: "x", PowerShell: "y"})
+func TestRunScriptsWithPropagatesError(t *testing.T) {
+	run := func(string, string) error { return errors.New("boom") }
+	err := RunScriptsWith(Scripts{Bash: "x", PowerShell: "y"}, run)
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("err = %v", err)
 	}

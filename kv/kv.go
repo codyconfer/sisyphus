@@ -1,12 +1,19 @@
+// Package kv is a generic namespaced key/value store in a single DuckDB
+// file, with an optional expiry per entry. Expired rows are lazily deleted:
+// Get drops one it hits, List and Namespaces sweep before reading, and Sweep
+// can be called on its own.
 package kv
 
 import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/codyconfer/sisyphus/duckopt"
 	"github.com/codyconfer/sisyphus/internal/duckdb"
+	"github.com/codyconfer/sisyphus/storeerr"
 )
 
 const schema = `
@@ -21,38 +28,37 @@ CREATE TABLE IF NOT EXISTS kv (
 `
 
 // ErrUnavailable is returned when a method is called on a nil or closed store.
-var ErrUnavailable = errors.New("kv store unavailable")
+// It wraps storeerr.ErrUnavailable, so both errors.Is checks match.
+var ErrUnavailable = fmt.Errorf("kv %w", storeerr.ErrUnavailable)
 
+// Entry is one stored value with its expiry (zero means never expires) and
+// last-write time.
 type Entry struct {
 	Value   string
 	Expiry  time.Time
 	Updated time.Time
 }
 
+// Store is a namespaced key/value store with per-entry expiry in one DuckDB
+// file.
+//
+// A nil *Store is a valid no-op: every method returns ErrUnavailable, except
+// Close, which returns nil.
 type Store struct {
 	h *duckdb.Handle
 }
 
-type Option func(*duckdb.Options)
-
-func WithIdle(d time.Duration) Option { return func(o *duckdb.Options) { o.Idle = d } }
-
-func WithTimeout(d time.Duration) Option { return func(o *duckdb.Options) { o.Timeout = d } }
-
-func WithMaxHold(d time.Duration) Option { return func(o *duckdb.Options) { o.MaxHold = d } }
-
-func Open(ctx context.Context, path string, opts ...Option) (*Store, error) {
-	o := duckdb.Options{Unavailable: ErrUnavailable}
-	for _, fn := range opts {
-		fn(&o)
-	}
-	h := duckdb.NewHandle(path, schema, o)
+// Open opens (or creates) the store's DuckDB file at path and ensures its
+// schema. The file is owner-only (0600) and single-writer.
+func Open(ctx context.Context, path string, opts ...duckopt.Option) (*Store, error) {
+	h := duckdb.NewHandle(path, schema, duckdb.OptionsFrom(duckopt.Build(opts...), ErrUnavailable))
 	if err := h.Ensure(ctx); err != nil {
 		return nil, err
 	}
 	return &Store{h: h}, nil
 }
 
+// Close releases the database. It is safe on a nil *Store and returns nil.
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
@@ -60,6 +66,9 @@ func (s *Store) Close() error {
 	return s.h.Close()
 }
 
+// Get returns the entry stored under namespace/key. An entry past its expiry
+// is reported as a miss and deleted on the spot (best-effort), so a read is
+// also a write when it lands on an expired row.
 func (s *Store) Get(ctx context.Context, namespace, key string) (Entry, bool, error) {
 	if s == nil || s.h == nil {
 		return Entry{}, false, ErrUnavailable
@@ -93,6 +102,8 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (Entry, bool, er
 	return e, found, nil
 }
 
+// Put stores value under namespace/key, replacing any existing entry. A zero
+// expiry means the entry never expires.
 func (s *Store) Put(ctx context.Context, namespace, key, value string, expiry time.Time) error {
 	if s == nil || s.h == nil {
 		return ErrUnavailable
@@ -116,6 +127,8 @@ func (s *Store) Put(ctx context.Context, namespace, key, value string, expiry ti
 	})
 }
 
+// Delete removes the entry under namespace/key. Deleting a key that does not
+// exist is not an error.
 func (s *Store) Delete(ctx context.Context, namespace, key string) error {
 	if s == nil || s.h == nil {
 		return ErrUnavailable
@@ -126,6 +139,8 @@ func (s *Store) Delete(ctx context.Context, namespace, key string) error {
 	})
 }
 
+// List returns every live entry in namespace, keyed by key. It sweeps
+// expired rows (store-wide) first, so listing is also a write.
 func (s *Store) List(ctx context.Context, namespace string) (map[string]Entry, error) {
 	if s == nil || s.h == nil {
 		return nil, ErrUnavailable
@@ -268,7 +283,8 @@ ORDER BY namespace`, cutoff, now)
 	return out, nil
 }
 
-// Clear deletes every entry in a namespace, or the whole store when namespace is empty.
+// Clear deletes every entry in a namespace and returns how many rows went.
+// An empty namespace is not a no-op: it wipes the whole store.
 func (s *Store) Clear(ctx context.Context, namespace string) (int64, error) {
 	if s == nil || s.h == nil {
 		return 0, ErrUnavailable

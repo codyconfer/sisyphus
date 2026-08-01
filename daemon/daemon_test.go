@@ -44,10 +44,10 @@ func TestPollBaselinesThenEmits(t *testing.T) {
 func TestDeduperFirstIsBaseline(t *testing.T) {
 	ctx := context.Background()
 	d := NewDeduper(func(s string) string { return s })
-	if got := d.Fresh(ctx, []string{"a", "b"}); got != nil {
+	if got := d.Unseen(ctx, []string{"a", "b"}); got != nil {
 		t.Fatalf("first Fresh = %v, want nil baseline", got)
 	}
-	got := d.Fresh(ctx, []string{"a", "b", "c"})
+	got := d.Unseen(ctx, []string{"a", "b", "c"})
 	if len(got) != 1 || got[0] != "c" {
 		t.Fatalf("second Fresh = %v, want [c]", got)
 	}
@@ -56,16 +56,16 @@ func TestDeduperFirstIsBaseline(t *testing.T) {
 func TestDeduperEvictsOldestOverCap(t *testing.T) {
 	ctx := context.Background()
 	d := &Deduper[string]{key: func(s string) string { return s }, keys: map[string]bool{}, max: 2}
-	d.Fresh(ctx, []string{"a"})
-	d.Fresh(ctx, []string{"b"})
-	d.Fresh(ctx, []string{"c"})
+	d.Unseen(ctx, []string{"a"})
+	d.Unseen(ctx, []string{"b"})
+	d.Unseen(ctx, []string{"c"})
 	if len(d.keys) != 2 {
 		t.Fatalf("cap should bound seen keys to 2, got %d", len(d.keys))
 	}
 	if d.keys["a"] {
 		t.Fatal("oldest key should be evicted past the cap")
 	}
-	if out := d.Fresh(ctx, []string{"a"}); len(out) != 1 || out[0] != "a" {
+	if out := d.Unseen(ctx, []string{"a"}); len(out) != 1 || out[0] != "a" {
 		t.Fatalf("re-seen evicted key should emit again, got %v", out)
 	}
 }
@@ -74,7 +74,7 @@ func TestPersistentDeduperEvictsFromStore(t *testing.T) {
 	ctx := context.Background()
 	kv := newMemKV()
 	d := &Deduper[string]{key: func(s string) string { return s }, keys: map[string]bool{}, max: 2, kv: kv, ns: "seen"}
-	d.Fresh(ctx, []string{"a", "b", "c", "d"})
+	d.Unseen(ctx, []string{"a", "b", "c", "d"})
 	stored, _ := kv.List(ctx, "seen")
 	if len(stored) != 2 {
 		t.Fatalf("persistent seen set should be bounded to 2, got %d", len(stored))

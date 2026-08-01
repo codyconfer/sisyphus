@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
+
+	"github.com/codyconfer/sisyphus/internal/crypt"
 )
 
 const seedSchema = `CREATE TABLE IF NOT EXISTS runs(i INTEGER);`
@@ -76,11 +78,11 @@ func sealArchive(t *testing.T, paths ...string) ([]byte, []byte) {
 	if err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	key, err := NewKey()
+	key, err := crypt.NewKey()
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := Encrypt(arc, key)
+	sealed, err := crypt.Encrypt(arc, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +122,7 @@ func TestArchiveCheckpointsBeforeReading(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	entries, err := Extract(arc)
+	entries, err := extract(arc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -544,7 +546,7 @@ func TestArchiveTreatsAnyDatabaseHeaderAsADatabase(t *testing.T) {
 		t.Fatalf("plugin.db was copied as a plain file: no database lock was taken (%v); a database "+
 			"must be recognised by its header, not by a .duckdb name", statErr)
 	}
-	entries, err := Extract(arc)
+	entries, err := extract(arc)
 	if err != nil {
 		t.Fatal(err)
 	}

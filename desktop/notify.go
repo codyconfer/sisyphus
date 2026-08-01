@@ -19,6 +19,12 @@ type Icon struct {
 	Bytes []byte
 }
 
+// IconFrom builds an Icon from raw fields — the bridge for asset types other
+// packages define with the same shape (for example daemon.Asset).
+func IconFrom(name, mime string, data []byte) Icon {
+	return Icon{Name: name, MIME: mime, Bytes: data}
+}
+
 // Notification is a desktop toast.
 type Notification struct {
 	Title   string

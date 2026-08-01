@@ -11,7 +11,13 @@ linters:
     - misspell
     - unconvert
     - bodyclose
+    - revive
   settings:
+    revive:
+      rules:
+        # Keep the exported API documented; this is a library.
+        - name: exported
+        - name: package-comments
     errcheck:
       exclude-functions:
         - fmt.Fprint
@@ -33,6 +39,10 @@ linters:
       # idiom; staticcheck doesn't treat t.Fatal as terminating here.
       - path: _test\.go
         text: "SA5011"
+      # Tests don't need doc comments.
+      - path: _test\.go
+        linters:
+          - revive
 
 formatters:
   enable:

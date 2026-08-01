@@ -1,12 +1,15 @@
+// Package backup snapshots a set of files into a tar archive and restores
+// such archives atomically. DuckDB databases get special handling on both
+// sides: they are checkpointed and lock-guarded before being read, and a
+// restore refuses to replace a database another process still holds.
+// Encryption (AES-256-GCM) is applied by the caller; the root sisyphus
+// package's Backup/Restore pair this with key escrow.
 package backup
 
 import (
 	"archive/tar"
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -18,10 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codyconfer/sisyphus/internal/crypt"
 	"github.com/codyconfer/sisyphus/internal/duckdb"
 )
-
-const KeyBytes = 32
 
 const (
 	walSuffix  = ".wal"
@@ -44,14 +46,13 @@ var lockTimeout = 15 * time.Second
 
 var renameFile = os.Rename
 
-func NewKey() ([]byte, error) {
-	k := make([]byte, KeyBytes)
-	if _, err := rand.Read(k); err != nil {
-		return nil, err
-	}
-	return k, nil
-}
-
+// Archive snapshots paths into an uncompressed tar, storing each file under
+// its basename (two paths with the same basename are an error). A DuckDB
+// database is checkpointed under this package's cross-process lock before it
+// is read, so the snapshot is consistent — which also means backing up a
+// database needs write access to it. A path that does not exist is skipped,
+// unless an orphaned .wal sits beside it, which is an error. An archive that
+// would contain no files at all is also an error.
 func Archive(ctx context.Context, paths []string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -200,50 +201,21 @@ func held(err error) bool {
 	return errors.Is(err, duckdb.ErrLocked) || errors.Is(err, duckdb.ErrClosed)
 }
 
-func Encrypt(plaintext, key []byte) ([]byte, error) {
-	gcm, err := newGCM(key)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, plaintext, nil), nil
-}
-
-func Decrypt(sealed, key []byte) ([]byte, error) {
-	gcm, err := newGCM(key)
-	if err != nil {
-		return nil, err
-	}
-	ns := gcm.NonceSize()
-	if len(sealed) < ns {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-	return gcm.Open(nil, sealed[:ns], sealed[ns:], nil)
-}
-
-func newGCM(key []byte) (cipher.AEAD, error) {
-	if len(key) != KeyBytes {
-		return nil, fmt.Errorf("backup key must be %d bytes, got %d", KeyBytes, len(key))
-	}
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
-}
-
+// Restore decrypts sealed with key, extracts the archive, and swaps the
+// contained files into destDir (created if needed), returning the sorted
+// basenames it wrote. Entries are flattened to basenames, staged to disk
+// first, then swapped in with the previous files set aside; on failure the
+// swap is rolled back, and the error says exactly which files (if any) could
+// not be put back. Databases still held by another process are refused.
 func Restore(ctx context.Context, sealed, key []byte, destDir string) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	plain, err := Decrypt(sealed, key)
+	plain, err := crypt.Decrypt(sealed, key)
 	if err != nil {
 		return nil, fmt.Errorf("decrypting backup (wrong key?): %w", err)
 	}
-	entries, err := Extract(plain)
+	entries, err := extract(plain)
 	if err != nil {
 		return nil, err
 	}
@@ -474,7 +446,7 @@ func sweepStageDirs(destDir string) {
 
 const maxEntryBytes = 256 << 20
 
-func Extract(archive []byte) (map[string][]byte, error) {
+func extract(archive []byte) (map[string][]byte, error) {
 	out := map[string][]byte{}
 	tr := tar.NewReader(bytes.NewReader(archive))
 	for {

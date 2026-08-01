@@ -10,11 +10,16 @@ const maxScheduleBackoff = 5 * time.Minute
 
 const maxScheduleFails = 64
 
+// Due says when a job should next run. A zero At means "not scheduled";
+// an At at or before the scheduler's current tick runs immediately.
 type Due struct {
-	At    time.Time
-	Ready bool
+	At time.Time
 }
 
+// ScheduleJob is one job managed by Schedule. Next reports when the job
+// should next run; Run does the work. A job missing either function is
+// skipped. Errors from Next or Run go to OnError when set, otherwise to
+// Logger (or slog.Default) as a warning.
 type ScheduleJob struct {
 	Name    string
 	Next    func(ctx context.Context, now time.Time) (Due, error)
@@ -28,6 +33,14 @@ type scheduleState struct {
 	at    time.Time
 }
 
+// Schedule runs jobs until ctx is cancelled, then returns nil (it never
+// returns an error). Each cycle it asks every eligible job's Next when it is
+// due; a Due.At at or before now runs the job, a later one is waited for,
+// and a zero Due.At re-asks after interval (<= 0 means one second). A job
+// whose Next or Run fails is retried with exponential backoff, doubling from
+// interval up to five minutes, and the failure is reported through OnError
+// or the job's logger. Jobs run sequentially on the scheduler's goroutine —
+// a slow Run delays the other jobs.
 func Schedule(ctx context.Context, interval time.Duration, jobs ...ScheduleJob) error {
 	if interval <= 0 {
 		interval = time.Second
@@ -66,7 +79,7 @@ func Schedule(ctx context.Context, interval time.Duration, jobs ...ScheduleJob) 
 				note(st.fail(job, interval, now, err))
 				continue
 			}
-			if due.Ready || (!due.At.IsZero() && !due.At.After(now)) {
+			if !due.At.IsZero() && !due.At.After(now) {
 				if err := job.Run(ctx); err != nil {
 					if ctx.Err() != nil {
 						return nil
@@ -160,6 +173,9 @@ func earlier(a, b time.Time) time.Time {
 	return a
 }
 
+// RunAt waits until at and then runs fn once, returning its error. A time at
+// or before now runs fn immediately. Cancellation before fn starts returns
+// nil — the run is simply skipped — and a nil fn is a no-op.
 func RunAt(ctx context.Context, at time.Time, fn func(ctx context.Context) error) error {
 	if fn == nil {
 		return nil

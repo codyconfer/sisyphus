@@ -32,12 +32,26 @@ const stopWait = 10 * time.Second
 // on an SCM request, so the fallback is what terminates it there.
 const fatalStopGrace = 5 * time.Second
 
+// Scope selects whether the service is managed system-wide or per-user.
+type Scope int
+
+const (
+	// ScopeSystem manages a system-wide service (the default).
+	ScopeSystem Scope = iota
+	// ScopeUser manages a per-user service (systemd user unit, launchd
+	// agent). Ignored on Windows, which has no per-user services.
+	ScopeUser
+)
+
+// Config describes the service to the OS service manager: its identifier
+// (Name), human-facing DisplayName and Description, the Arguments the
+// installed unit starts the binary with, and its Scope.
 type Config struct {
 	Name        string
 	DisplayName string
 	Description string
 	Arguments   []string
-	UserService bool
+	Scope       Scope
 }
 
 type program struct {
@@ -153,11 +167,17 @@ func logFatal(s kservice.Service, err error) {
 	slog.Error("service work function failed", "err", err)
 }
 
+// Service is a managed OS service around one work function.
 type Service struct {
 	svc  kservice.Service
 	prog *program
 }
 
+// New builds a Service whose work function is run. run receives a context
+// that is cancelled when the service manager stops the service; it should
+// block until then. A non-Canceled error from run is fatal: it is logged,
+// unwinds Run, and on platforms that ignore that (Windows) the service asks
+// its own manager to stop it.
 func New(cfg Config, run func(ctx context.Context) error) (*Service, error) {
 	p := newProgram(run)
 	svc, err := kservice.New(p, serviceConfig(cfg, p))
@@ -169,7 +189,7 @@ func New(cfg Config, run func(ctx context.Context) error) (*Service, error) {
 
 func serviceConfig(cfg Config, p *program) *kservice.Config {
 	opt := kservice.KeyValue{}
-	if cfg.UserService && runtime.GOOS != "windows" {
+	if cfg.Scope == ScopeUser && runtime.GOOS != "windows" {
 		opt["UserService"] = true
 	}
 	if p != nil {
@@ -184,6 +204,8 @@ func serviceConfig(cfg Config, p *program) *kservice.Config {
 	}
 }
 
+// Interactive reports whether the process is running interactively (e.g.
+// from a terminal) rather than under the OS service manager.
 func Interactive() bool { return kservice.Interactive() }
 
 // Run is the OS service entrypoint: it blocks until the service manager stops
@@ -197,21 +219,62 @@ func (s *Service) Run() error {
 	return err
 }
 
-func (s *Service) Install() error   { return s.svc.Install() }
+// Install registers the service with the OS service manager.
+func (s *Service) Install() error { return s.svc.Install() }
+
+// Uninstall removes the service from the OS service manager.
 func (s *Service) Uninstall() error { return s.svc.Uninstall() }
-func (s *Service) Start() error     { return s.svc.Start() }
-func (s *Service) Stop() error      { return s.svc.Stop() }
-func (s *Service) Restart() error   { return s.svc.Restart() }
+
+// Start asks the OS service manager to start the installed service.
+func (s *Service) Start() error { return s.svc.Start() }
+
+// Stop asks the OS service manager to stop the installed service.
+func (s *Service) Stop() error { return s.svc.Stop() }
+
+// Restart asks the OS service manager to restart the installed service.
+func (s *Service) Restart() error { return s.svc.Restart() }
+
+// Platform names the underlying service system (e.g. "linux-systemd").
 func (s *Service) Platform() string { return s.svc.Platform() }
 
-func (s *Service) Status() (string, error) {
+// State is the coarse service status reported by Status.
+type State int
+
+// The coarse states Status can report.
+const (
+	StateUnknown State = iota
+	StateRunning
+	StateStopped
+	StateNotInstalled
+)
+
+func (s State) String() string {
+	switch s {
+	case StateRunning:
+		return "running"
+	case StateStopped:
+		return "stopped"
+	case StateNotInstalled:
+		return "not installed"
+	default:
+		return "unknown"
+	}
+}
+
+// Status asks the OS service manager for the service's state. The State is
+// meaningful even when the error is non-nil: a service that is not installed
+// comes back as StateNotInstalled together with the underlying error.
+func (s *Service) Status() (State, error) {
 	st, err := s.svc.Status()
 	switch st {
 	case kservice.StatusRunning:
-		return "running", err
+		return StateRunning, err
 	case kservice.StatusStopped:
-		return "stopped", err
+		return StateStopped, err
 	default:
-		return "unknown", err
+		if errors.Is(err, kservice.ErrNotInstalled) {
+			return StateNotInstalled, err
+		}
+		return StateUnknown, err
 	}
 }

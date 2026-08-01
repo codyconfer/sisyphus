@@ -14,9 +14,14 @@ import (
 
 const revSuffix = ".gen"
 
-var ErrRevisionMarker = errors.New("change committed but revision marker not updated")
+// ErrGenerationMarker wraps a failure to update the sidecar generation file
+// after a write already committed. The store's data is correct; only pollers
+// watching Generation may miss the change. Match it with errors.Is.
+var ErrGenerationMarker = errors.New("change committed but generation marker not updated")
 
-func (s *Store) Revision() (string, bool) {
+// Generation reports an opaque marker that changes with every committed
+// write, so pollers can detect change without opening the database.
+func (s *Store) Generation() (string, bool) {
 	if s == nil || s.h == nil {
 		return "", false
 	}
@@ -33,13 +38,13 @@ func (s *Store) Revision() (string, bool) {
 
 func (s *Store) bump(change string) error {
 	path := s.h.Path() + revSuffix
-	rev := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + Hash("rev", []byte(change))[:12]
+	rev := strconv.FormatInt(time.Now().UnixNano(), 36) + "-" + Hash("gen", []byte(change))[:12]
 	dir, file := filepath.Split(path)
 	if dir == "" {
 		dir = "."
 	}
 	if _, err := sconfig.WriteItem(dir, file, []byte(rev+"\n")); err != nil {
-		return fmt.Errorf("%w: %w", ErrRevisionMarker, err)
+		return fmt.Errorf("%w: %w", ErrGenerationMarker, err)
 	}
 	return nil
 }

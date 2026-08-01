@@ -1,3 +1,8 @@
+// Package config resolves an application's home directory, reads its config
+// file, and parses YAML or JSON into the caller's own struct with
+// environment-variable overrides layered on top. Nothing app-specific is
+// baked in: the env var, directory name, file basenames, and env prefix all
+// come from the caller.
 package config
 
 import (
@@ -17,6 +22,20 @@ import (
 
 var defaultBasenames = []string{"config.yaml", "config.yml", "config.json"}
 
+// Format names a config serialization format. It is a string type, so a
+// Format field marshals to plain JSON/YAML strings and existing on-disk data
+// round-trips unchanged.
+type Format string
+
+// The two formats ReadFile detects and ParseInto parses.
+const (
+	FormatYAML Format = "yaml"
+	FormatJSON Format = "json"
+)
+
+// Home resolves the application home directory: override when non-empty,
+// else the value of envVar when set and non-empty, else dirName under the
+// user's home directory. It only resolves the path; nothing is created.
 func Home(override, envVar, dirName string) (string, error) {
 	if override != "" {
 		return override, nil
@@ -33,7 +52,12 @@ func Home(override, envVar, dirName string) (string, error) {
 	return filepath.Join(hd, dirName), nil
 }
 
-func ReadFile(home string, basenames ...string) (raw []byte, format string, err error) {
+// ReadFile reads the first of the given basenames that exists under home and
+// reports its format from the extension (.json means JSON, anything else
+// YAML). With no basenames it tries config.yaml, config.yml, config.json in
+// that order. No file at all is not an error: it returns nil content, an
+// empty format, and a nil error.
+func ReadFile(home string, basenames ...string) (raw []byte, format Format, err error) {
 	if len(basenames) == 0 {
 		basenames = defaultBasenames
 	}
@@ -49,13 +73,14 @@ func ReadFile(home string, basenames ...string) (raw []byte, format string, err 
 	return nil, "", nil
 }
 
-func formatOf(name string) string {
+func formatOf(name string) Format {
 	if strings.EqualFold(filepath.Ext(name), ".json") {
-		return "json"
+		return FormatJSON
 	}
-	return "yaml"
+	return FormatYAML
 }
 
+// Option customizes ParseInto. Nil options are ignored.
 type Option func(*parseOptions)
 
 type parseOptions struct {
@@ -63,15 +88,27 @@ type parseOptions struct {
 	envSectionWarn func(name string, section []string)
 }
 
+// WithEnvKeyMapper replaces the reflection-based mapping from env var name to
+// config key path. fn receives the full variable name (prefix included) and
+// returns the path segments to set, or an empty slice to ignore the variable.
 func WithEnvKeyMapper(fn func(name string) []string) Option {
 	return func(o *parseOptions) { o.envKeyMapper = fn }
 }
 
+// WithEnvSectionWarning installs a callback invoked when an env var resolves
+// to a config section rather than a settable leaf value. Such variables are
+// skipped; the callback is the caller's chance to warn about them.
 func WithEnvSectionWarning(fn func(name string, section []string)) Option {
 	return func(o *parseOptions) { o.envSectionWarn = fn }
 }
 
-func ParseInto(target any, raw []byte, format, envPrefix string, opts ...Option) error {
+// ParseInto parses raw (YAML unless format is FormatJSON) into target, then
+// overlays values from environment variables starting with envPrefix (no env
+// handling when the prefix is empty). Variable names are matched to target's
+// fields by walking its koanf tags case-insensitively, so MYAPP_SERVER_PORT
+// reaches server.port; WithEnvKeyMapper overrides that mapping. Empty raw is
+// fine: env overrides alone can populate target.
+func ParseInto(target any, raw []byte, format Format, envPrefix string, opts ...Option) error {
 	var o parseOptions
 	for _, apply := range opts {
 		if apply != nil {
@@ -81,7 +118,7 @@ func ParseInto(target any, raw []byte, format, envPrefix string, opts ...Option)
 	k := koanf.New(".")
 	if len(raw) > 0 {
 		parser := koanf.Parser(yaml.Parser())
-		if format == "json" {
+		if format == FormatJSON {
 			parser = kjson.Parser()
 		}
 		if err := k.Load(rawbytes.Provider(raw), parser); err != nil {

@@ -57,44 +57,44 @@ func stub(bw, op bool) func() {
 	return func() { bwAvailable, opAvailable = origBW, origOP }
 }
 
-func TestResolveAutoPriority(t *testing.T) {
+func TestOpenAutoPriority(t *testing.T) {
 	defer stub(true, true)()
-	if s, err := Resolve(context.Background(), "auto", ""); err != nil || s.Name() != "bitwarden" {
+	if s, err := Open(context.Background(), BackendAuto, ""); err != nil || s.Name() != "bitwarden" {
 		t.Fatalf("auto with bw+op = %v, %v", s, err)
 	}
 }
 
-func TestResolveAutoFallsThrough(t *testing.T) {
+func TestOpenAutoFallsThrough(t *testing.T) {
 	restore := stub(false, true)
-	if s, err := Resolve(context.Background(), "", ""); err != nil || s.Name() != "1password" {
+	if s, err := Open(context.Background(), "", ""); err != nil || s.Name() != "1password" {
 		t.Fatalf("auto with op only = %v, %v", s, err)
 	}
 	restore()
 
 	defer stub(false, false)()
-	if s, err := Resolve(context.Background(), "auto", ""); err != nil || s.Name() != "os-keyring" {
+	if s, err := Open(context.Background(), BackendAuto, ""); err != nil || s.Name() != "os-keyring" {
 		t.Fatalf("auto with neither = %v, %v", s, err)
 	}
 }
 
-func TestResolveExplicitUnconfigured(t *testing.T) {
+func TestOpenExplicitUnconfigured(t *testing.T) {
 	defer stub(false, false)()
-	if _, err := Resolve(context.Background(), "bitwarden", ""); err == nil {
+	if _, err := Open(context.Background(), BackendBitwarden, ""); err == nil {
 		t.Error("explicit bitwarden when unavailable should error")
 	}
-	if _, err := Resolve(context.Background(), "1password", ""); err == nil {
+	if _, err := Open(context.Background(), Backend1Password, ""); err == nil {
 		t.Error("explicit 1password when unavailable should error")
 	}
-	if _, err := Resolve(context.Background(), "nonsense", ""); err == nil {
+	if _, err := Open(context.Background(), "nonsense", ""); err == nil {
 		t.Error("unknown backend should error")
 	}
 }
 
-func TestBackendsMatchesResolve(t *testing.T) {
+func TestBackendsMatchesOpen(t *testing.T) {
 	defer stub(true, true)()
 
 	got := Backends()
-	for _, want := range []string{"auto", "bitwarden", "bw", "1password", "op", "keyring"} {
+	for _, want := range []string{"auto", "bitwarden", "1password", "keyring"} {
 		found := false
 		for _, b := range got {
 			if b == want {
@@ -106,22 +106,34 @@ func TestBackendsMatchesResolve(t *testing.T) {
 		}
 	}
 	for _, b := range got {
-		if _, err := Resolve(context.Background(), b, "svc"); err != nil {
-			t.Errorf("Resolve(%q) = %v, but Backends() advertises it", b, err)
+		if _, ok := ParseBackend(b); !ok {
+			t.Errorf("ParseBackend(%q) = false, but Backends() advertises it", b)
 		}
-		if !ValidBackend(b) {
-			t.Errorf("ValidBackend(%q) = false, but Backends() advertises it", b)
+		if _, err := Open(context.Background(), Backend(b), "svc"); err != nil {
+			t.Errorf("Open(%q) = %v, but Backends() advertises it", b, err)
 		}
 	}
 
-	if !ValidBackend("") {
-		t.Error(`ValidBackend("") = false, want true: empty means auto`)
+	aliases := map[string]Backend{
+		"":   BackendAuto,
+		"bw": BackendBitwarden,
+		"op": Backend1Password,
 	}
-	if ValidBackend("nonsense") {
-		t.Error(`ValidBackend("nonsense") = true, want false`)
+	for in, want := range aliases {
+		b, ok := ParseBackend(in)
+		if !ok || b != want {
+			t.Errorf("ParseBackend(%q) = %q, %v, want %q, true", in, b, ok, want)
+		}
+		if _, err := Open(context.Background(), Backend(in), "svc"); err != nil {
+			t.Errorf("Open(%q) = %v, want alias accepted", in, err)
+		}
 	}
-	if _, err := Resolve(context.Background(), "nonsense", ""); err == nil {
-		t.Error("Resolve rejected nothing; unknown backend must error")
+
+	if _, ok := ParseBackend("nonsense"); ok {
+		t.Error(`ParseBackend("nonsense") = true, want false`)
+	}
+	if _, err := Open(context.Background(), "nonsense", ""); err == nil {
+		t.Error("Open rejected nothing; unknown backend must error")
 	} else {
 		for _, b := range got {
 			if !strings.Contains(err.Error(), b) {
@@ -138,9 +150,9 @@ func TestBackendsMatchesResolve(t *testing.T) {
 
 func TestKeyringServiceInjected(t *testing.T) {
 	defer stub(false, false)()
-	s, err := Resolve(context.Background(), "keyring", "myapp")
+	s, err := Open(context.Background(), BackendKeyring, "myapp")
 	if err != nil {
-		t.Fatalf("Resolve keyring: %v", err)
+		t.Fatalf("Open keyring: %v", err)
 	}
 	ks, ok := s.(keyringStore)
 	if !ok {

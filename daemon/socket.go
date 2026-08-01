@@ -3,9 +3,14 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"time"
 )
+
+// ErrInUse reports that another process already listens on the socket or
+// pipe. Listen returns it wrapped, so match with errors.Is.
+var ErrInUse = errors.New("address already in use")
 
 const (
 	broadcastWriteTimeout = 10 * time.Second
@@ -15,6 +20,13 @@ const (
 	peerDrainBuffer       = 512
 )
 
+// Broadcast serves subj over ln until ctx is cancelled: each accepted
+// connection gets its own subscription (buffered to buffer) and receives one
+// encoded, newline-terminated frame per published value. Peers that are not
+// the same OS user are refused, at most 64 connections are served at once
+// (extras are closed immediately), a value that fails to encode is skipped,
+// and a connection whose write blocks past ten seconds is dropped.
+// Broadcast blocks; run it in its own goroutine.
 func Broadcast[T any](ctx context.Context, ln net.Listener, subj *Subject[T], buffer int, encode func(T) ([]byte, error)) {
 	go func() {
 		<-ctx.Done()
@@ -84,16 +96,25 @@ func watchPeerDeparture(conn net.Conn) <-chan struct{} {
 	return departed
 }
 
+// DialOption customizes Dial. Nil options are ignored.
 type DialOption func(*dialOptions)
 
 type dialOptions struct {
 	onClose func(error)
 }
 
+// WithDialClose registers fn to run once when the stream returned by Dial
+// ends. fn receives why it ended: nil for a clean server-side close, the
+// context error on cancellation, or the read error otherwise.
 func WithDialClose(fn func(error)) DialOption {
 	return func(o *dialOptions) { o.onClose = fn }
 }
 
+// Dial connects to the service endpoint at prefix/name (see Listen for how
+// the two are used per platform) and returns a channel of decoded values,
+// one per newline-terminated frame. Frames that fail to decode are skipped.
+// The channel closes when the server closes the connection, a frame exceeds
+// 4 MiB, or ctx is cancelled; use WithDialClose to learn which.
 func Dial[T any](ctx context.Context, prefix, name string, decode func([]byte) (T, error), opts ...DialOption) (<-chan T, error) {
 	var o dialOptions
 	for _, apply := range opts {
