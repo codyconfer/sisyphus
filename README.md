@@ -37,9 +37,8 @@ database. DuckDB-backed packages require CGO (via
 | `sisyphus/ipc` | Local transport: unix sockets / named pipes (`Listen`/`Dial`/`Broadcast`/`IsListening`). |
 | `sisyphus/schedule` | Periodic jobs: `Run` drives `Job`s with backoff; `RunAt` for one-shots. |
 | `sisyphus/tray` | Daemon run-state (`State`) + icon assets (untagged) and the systray (`!nodaemon`). |
-| `sisyphus/daemon` | Residue: `SignalContext`, capability probe `Attached`, plus deprecated forwarders for everything that moved to the four packages above. |
+| `sisyphus/daemon` | Residue: `SignalContext` and the capability probe `Attached`. |
 | `sisyphus/daemon/service` | OS service install/start/stop wrapper. Empty under [`nodaemon`](#daemon-free-builds-nodaemon). |
-| `sisyphus/daemon/ui` | Deprecated facade: the system tray moved to `sisyphus/tray`. Empty under [`nodaemon`](#daemon-free-builds-nodaemon). |
 
 Each sub-package is usable on its own. A nil `*Store` is a valid no-op across the
 DuckDB packages, so "disabled" and "open failed" behave uniformly.
@@ -154,7 +153,7 @@ make test TAGS=nodaemon
 | `mode.Supported(m)` | `true` for every mode | `false` for `ModeServe` / `ModeDaemon` |
 | `mode.Gate(ctx, m, hooks)` | Runs the hooks | Wraps `ErrUnsupportedMode` for serve/daemon |
 | `daemon.Attached(prefix, name)` | Probes the socket when `DaemonSupported` | Always `false` (gates on `mode.DaemonSupported`) |
-| `daemon/service`, `daemon/ui`, `tray.Tray` | Full API | Empty packages / compiled out |
+| `daemon/service`, `tray.Tray` | Full API | Empty package / compiled out |
 | `desktop` | Full API | Full API (untagged; import only when you want notifications) |
 
 `DaemonSupported` is a constant, so `if !mode.DaemonSupported { … }` is
@@ -166,13 +165,14 @@ use `ipc.IsListening` only when you want a raw probe regardless of build.
 `mode` is the sole build-tag value source for daemon capability; `Attached` is
 untagged and imports `mode`.
 
-Emptying `daemon/service` and `daemon/ui` under the tag keeps
-`kardianos/service` and `fyne.io/systray` out of the dependency graph; importing
-either package in a `nodaemon` build is a compile error at the first use.
+Emptying `daemon/service` and compiling out `tray.Tray` under the tag keeps
+`kardianos/service` and `fyne.io/systray` out of the dependency graph; using
+either in a `nodaemon` build is a compile error at the first use.
 Desktop notifications live in `sisyphus/desktop` (untagged, beeep); omit that
-import in CLI-only binaries to keep beeep out. The rest of `sisyphus/daemon` —
-polling, fan-in, dedupe, cursors, schedules, watermarks, sockets — is untagged
-and stays available, because none of it requires a service to be running.
+import in CLI-only binaries to keep beeep out. `stream`, `ipc`, `schedule`, and
+the tray state half — polling, fan-in, dedupe, cursors, schedules, watermarks,
+sockets, run-state icons — are untagged and stay available, because none of it
+requires a service to be running.
 
 ### Encrypted, key-escrowed backups
 

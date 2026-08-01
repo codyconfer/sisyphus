@@ -5,5 +5,5 @@
 // Watermark, ScopedKV over the KV interface).
 //
 // The package is untagged: it is present in nodaemon builds, matching the
-// sisyphus rule that only daemon/service and daemon/ui compile out.
+// sisyphus rule that only daemon/service and the systray compile out.
 package stream

@@ -5,6 +5,5 @@
 // Everything else that used to live here has moved to semantic packages —
 // event pipelines to sisyphus/stream, socket/pipe transport to sisyphus/ipc,
 // periodic jobs to sisyphus/schedule, and run-state icons plus the systray to
-// sisyphus/tray. The deprecated forwarders in facade.go keep old import
-// paths compiling; new code should import the new packages directly.
+// sisyphus/tray.
 package daemon

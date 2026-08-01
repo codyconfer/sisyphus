@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codyconfer/sisyphus/ipc"
 	"github.com/codyconfer/sisyphus/mode"
 )
 
@@ -26,7 +27,7 @@ func shortSocketPath(t *testing.T) string {
 
 func TestAttachedRespectsDaemonSupported(t *testing.T) {
 	path := shortSocketPath(t)
-	ln, err := Listen("test", path)
+	ln, err := ipc.Listen("test", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func TestAttachedRespectsDaemonSupported(t *testing.T) {
 			c.Close()
 		}
 	}()
-	if !IsListening("test", path) {
+	if !ipc.IsListening("test", path) {
 		t.Fatal("the raw probe should see the listener")
 	}
 	got := Attached("test", path)
