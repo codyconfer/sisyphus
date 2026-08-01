@@ -126,7 +126,12 @@ func (d *Deduper[T]) Fresh(ctx context.Context, items []T) []T {
 		}
 		d.evict(ctx)
 	}
-	d.first = false
+	if d.first {
+		d.first = false
+		if d.kv != nil {
+			_ = d.kv.Put(ctx, d.ns, seenInitKey, "1", time.Time{})
+		}
+	}
 	return out
 }
 

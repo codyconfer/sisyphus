@@ -96,6 +96,42 @@ func WriteItem(dir, filename string, content []byte) (string, error) {
 	return path, nil
 }
 
+func OpenAppend(path string) (*os.File, error) {
+	if err := EnsureDir(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", path, err)
+	}
+	return f, nil
+}
+
+func AppendItem(dir, filename string, content []byte) (string, error) {
+	path := filepath.Join(dir, filename)
+	_, statErr := os.Lstat(path)
+	created := os.IsNotExist(statErr)
+	f, err := OpenAppend(path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(content); err != nil {
+		f.Close()
+		return "", fmt.Errorf("appending %s: %w", path, err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return "", fmt.Errorf("appending %s: %w", path, err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fmt.Errorf("appending %s: %w", path, err)
+	}
+	if created {
+		syncDir(filepath.Dir(path))
+	}
+	return path, nil
+}
+
 func writeAtomic(path string, content []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
@@ -173,6 +209,13 @@ func RemoveFiles(dir, base string, exts []string) (removed []string, err error) 
 		}
 	}
 	return removed, nil
+}
+
+func RemoveItem(path string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing %s: %w", path, err)
+	}
+	return nil
 }
 
 func ClearDir(dir string, exts []string) (removed []string, err error) {

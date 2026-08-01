@@ -40,7 +40,7 @@ const (
 	duckMagicOffset = 8
 )
 
-const lockTimeout = 15 * time.Second
+var lockTimeout = 15 * time.Second
 
 var renameFile = os.Rename
 
@@ -259,9 +259,12 @@ func Restore(ctx context.Context, sealed, key []byte, destDir string) ([]string,
 	if err := checkReplaceable(destDir, names); err != nil {
 		return nil, err
 	}
-	if err := checkUnheld(ctx, destDir, names); err != nil {
+	locks, err := acquireDestLocks(ctx, destDir, names)
+	if err != nil {
 		return nil, err
 	}
+	defer releaseLocks(locks)
+	sweepStageDirs(destDir)
 
 	stage, err := os.MkdirTemp(destDir, stagePrefix)
 	if err != nil {
@@ -421,22 +424,52 @@ func regularOrAbsent(path string) error {
 	return nil
 }
 
-func checkUnheld(ctx context.Context, destDir string, names []string) error {
+func acquireDestLocks(ctx context.Context, destDir string, names []string) ([]*duckdb.Lock, error) {
+	var locks []*duckdb.Lock
 	for _, base := range names {
 		path := filepath.Join(destDir, base)
 		db, err := isDatabase(path)
 		if err != nil || !db {
 			continue
 		}
-		h := duckdb.NewHandle(path, "", duckdb.Options{Timeout: lockTimeout})
-		err = h.Ensure(ctx)
-		_ = h.Close()
-		if held(err) {
-			return fmt.Errorf("refusing to restore over %s: %w "+
-				"(stop the munin daemon and any other munin process, then retry)", base, err)
+		l, err := duckdb.AcquireLock(ctx, path, lockTimeout)
+		if err != nil {
+			releaseLocks(locks)
+			if held(err) {
+				return nil, fmt.Errorf("refusing to restore over %s: %w "+
+					"(stop the munin daemon and any other munin process, then retry)", base, err)
+			}
+			return nil, fmt.Errorf("refusing to restore over %s: %w", base, err)
 		}
+		locks = append(locks, l)
 	}
-	return nil
+	return locks, nil
+}
+
+func releaseLocks(locks []*duckdb.Lock) {
+	for i := len(locks) - 1; i >= 0; i-- {
+		locks[i].Release()
+	}
+}
+
+const stageSweepAge = time.Hour
+
+func sweepStageDirs(destDir string) {
+	ents, err := os.ReadDir(destDir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-stageSweepAge)
+	for _, e := range ents {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), stagePrefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(destDir, e.Name()))
+	}
 }
 
 const maxEntryBytes = 256 << 20

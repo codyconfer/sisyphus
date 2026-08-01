@@ -71,6 +71,89 @@ func TestHandleQueueTimeoutReportsErrLocked(t *testing.T) {
 	}
 }
 
+func TestAcquireLockContention(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "a.duckdb")
+	holdSideLock(t, path, lockSuffix)
+
+	l, err := AcquireLock(ctx, path, 50*time.Millisecond)
+	if err == nil {
+		l.Release()
+		t.Fatal("AcquireLock succeeded while the database lock was held")
+	}
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("AcquireLock error %v does not match ErrLocked", err)
+	}
+	if !strings.Contains(err.Error(), "is locked by another process") {
+		t.Fatalf("AcquireLock error %q no longer names the contention", err)
+	}
+}
+
+func TestAcquireLockQueueTimeout(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "a.duckdb")
+	holdSideLock(t, path, wantSuffix)
+
+	l, err := AcquireLock(ctx, path, 50*time.Millisecond)
+	if err == nil {
+		l.Release()
+		t.Fatal("AcquireLock succeeded while the queue lock was held")
+	}
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("AcquireLock error %v does not match ErrLocked", err)
+	}
+	if !strings.Contains(err.Error(), "timed out queueing") {
+		t.Fatalf("AcquireLock error %q no longer names the queue wait", err)
+	}
+}
+
+func TestAcquireLockExcludesHandles(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "a.duckdb")
+
+	l, err := AcquireLock(ctx, path, time.Second)
+	if err != nil {
+		t.Fatalf("AcquireLock: %v", err)
+	}
+	t.Cleanup(l.Release)
+
+	h := NewHandle(path, testSchema, Options{Timeout: 50 * time.Millisecond})
+	t.Cleanup(func() { _ = h.Close() })
+	err = h.Ensure(ctx)
+	if err == nil {
+		t.Fatal("Ensure succeeded while AcquireLock held the database")
+	}
+	if !errors.Is(err, ErrLocked) {
+		t.Fatalf("Ensure error %v does not match ErrLocked", err)
+	}
+
+	l.Release()
+	if err := h.Ensure(ctx); err != nil {
+		t.Fatalf("Ensure after Release: %v", err)
+	}
+
+	l.Release()
+	var nilLock *Lock
+	nilLock.Release()
+}
+
+func TestAcquireLockWaitsOutAnIdleHandle(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "a.duckdb")
+
+	h := NewHandle(path, testSchema, Options{Idle: 20 * time.Millisecond, Timeout: 10 * time.Second})
+	t.Cleanup(func() { _ = h.Close() })
+	if err := put(ctx, h, "k", "v"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	l, err := AcquireLock(ctx, path, 5*time.Second)
+	if err != nil {
+		t.Fatalf("AcquireLock while a handle was idling out: %v", err)
+	}
+	l.Release()
+}
+
 func TestAsLockedRecognisesDuckDBLockDiagnostics(t *testing.T) {
 	for _, marker := range duckLockMarkers {
 		err := asLocked(fmt.Errorf("checkpointing: IO Error: %s by another process", marker))

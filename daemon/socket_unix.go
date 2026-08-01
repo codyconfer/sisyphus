@@ -11,16 +11,28 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const DefaultPipePrefix = "sisyphus"
 
 const dialProbeTimeout = 200 * time.Millisecond
 
+const (
+	lockAcquireTimeout = 2 * time.Second
+	lockRetryInterval  = 50 * time.Millisecond
+)
+
 var ErrInUse = errors.New("address already in use")
 
 func Listen(prefix, name string) (net.Listener, error) {
 	_ = prefix
+	lock, err := lockSocketPath(name)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockSocketPath(lock)
 	info, err := os.Lstat(name)
 	switch {
 	case err != nil && !os.IsNotExist(err):
@@ -53,6 +65,38 @@ func Listen(prefix, name string) (net.Listener, error) {
 		return nil, err
 	}
 	return guard, nil
+}
+
+func lockSocketPath(name string) (*os.File, error) {
+	f, err := os.OpenFile(name+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("cannot lock socket path %s: %w", name, err)
+	}
+	deadline := time.Now().Add(lockAcquireTimeout)
+	for {
+		err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return f, nil
+		}
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if errors.Is(err, unix.EWOULDBLOCK) {
+			if time.Now().Before(deadline) {
+				time.Sleep(lockRetryInterval)
+				continue
+			}
+			_ = f.Close()
+			return nil, fmt.Errorf("%w: %s: socket path lock still held after %s", ErrInUse, name, lockAcquireTimeout)
+		}
+		_ = f.Close()
+		return nil, fmt.Errorf("cannot lock socket path %s: %w", name, err)
+	}
+}
+
+func unlockSocketPath(f *os.File) {
+	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	_ = f.Close()
 }
 
 func clearDeadSocket(name string) error {

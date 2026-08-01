@@ -2,11 +2,14 @@ package backup
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codyconfer/sisyphus/internal/duckdb"
 )
@@ -354,6 +357,136 @@ func TestRestoreRefusesWhenALockSidecarIsUnusable(t *testing.T) {
 			}
 			assertNoRestoreDirs(t, dir)
 		})
+	}
+}
+
+func TestRestoreRefusesWhileADestinationDatabaseIsHeld(t *testing.T) {
+	ctx := context.Background()
+	dir, src := t.TempDir(), t.TempDir()
+	path := filepath.Join(dir, "held.duckdb")
+	writeRows(t, path, 5, true)
+
+	replacement := filepath.Join(src, "held.duckdb")
+	writeRows(t, replacement, 9, true)
+	sealed, key := sealArchive(t, replacement)
+
+	h := duckdb.NewHandle(path, "", duckdb.Options{
+		Idle:    time.Minute,
+		Timeout: 2 * time.Second,
+		MaxHold: time.Minute,
+	})
+	t.Cleanup(func() { _ = h.Close() })
+	if err := h.Ensure(ctx); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	prev := lockTimeout
+	lockTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { lockTimeout = prev })
+
+	_, err := Restore(ctx, sealed, key, dir)
+	if err == nil {
+		t.Fatal("restore succeeded while a destination database was held")
+	}
+	if !errors.Is(err, duckdb.ErrLocked) {
+		t.Fatalf("Restore error %v does not match duckdb.ErrLocked", err)
+	}
+	if !strings.Contains(err.Error(), "refusing to restore over held.duckdb") {
+		t.Errorf("error = %v, want it to name held.duckdb", err)
+	}
+
+	if err := h.Do(ctx, func(db *sql.DB) error {
+		_, execErr := db.ExecContext(ctx, "INSERT INTO runs VALUES (100)")
+		return execErr
+	}); err != nil {
+		t.Fatalf("insert on the held handle after the refused restore: %v", err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("closing the held handle: %v", err)
+	}
+	if got := countRows(t, path); got != 6 {
+		t.Fatalf("held.duckdb has %d rows, want 6: a refused restore must leave the held database "+
+			"and its live connection untouched", got)
+	}
+	assertNoRestoreDirs(t, dir)
+}
+
+func TestRestoreReleasesTheDatabaseLock(t *testing.T) {
+	ctx := context.Background()
+	dir, src := t.TempDir(), t.TempDir()
+	path := filepath.Join(dir, "free.duckdb")
+	writeRows(t, path, 3, true)
+
+	replacement := filepath.Join(src, "free.duckdb")
+	writeRows(t, replacement, 8, true)
+	sealed, key := sealArchive(t, replacement)
+
+	if _, err := Restore(ctx, sealed, key, dir); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	h := duckdb.NewHandle(path, "", duckdb.Options{Timeout: 2 * time.Second})
+	if err := h.Ensure(ctx); err != nil {
+		t.Fatalf("Ensure after restore: %v (the restore's lock was not released)", err)
+	}
+	if err := h.Close(); err != nil {
+		t.Fatalf("closing the probe handle: %v", err)
+	}
+	if got := countRows(t, path); got != 8 {
+		t.Fatalf("restored database has %d rows, want 8", got)
+	}
+	assertNoRestoreDirs(t, dir)
+}
+
+func TestRestoreSweepsOrphanedStageDirs(t *testing.T) {
+	dir, src := t.TempDir(), t.TempDir()
+	path := filepath.Join(dir, "s.duckdb")
+	writeRows(t, path, 2, true)
+
+	orphan := filepath.Join(dir, stagePrefix+"orphan")
+	if err := os.MkdirAll(orphan, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan, "junk"), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-2 * stageSweepAge)
+	if err := os.Chtimes(orphan, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(dir, stagePrefix+"live")
+	if err := os.MkdirAll(live, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "staged.duckdb"), []byte("in flight"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	aside := filepath.Join(dir, asidePrefix+"manual")
+	if err := os.MkdirAll(aside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(aside, "recover.duckdb"), []byte("precious"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := filepath.Join(src, "s.duckdb")
+	writeRows(t, replacement, 4, true)
+	sealed, key := sealArchive(t, replacement)
+
+	if _, err := Restore(context.Background(), sealed, key, dir); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Errorf("orphaned stage dir survived restore (err = %v)", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(live, "staged.duckdb")); err != nil || string(got) != "in flight" {
+		t.Errorf("fresh stage dir from a concurrent restore was swept (got %q, err = %v)", got, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(aside, "recover.duckdb")); err != nil || string(got) != "precious" {
+		t.Errorf("manual-recovery aside dir was touched (got %q, err = %v)", got, err)
+	}
+	if got := countRows(t, path); got != 4 {
+		t.Fatalf("restored database has %d rows, want 4", got)
 	}
 }
 

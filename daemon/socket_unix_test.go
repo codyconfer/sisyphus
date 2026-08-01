@@ -175,6 +175,73 @@ func waitForListener(t *testing.T, path string) {
 	t.Fatalf("timed out waiting for a listener at %s", path)
 }
 
+func TestListenFailsWithinBoundWhenLockHeld(t *testing.T) {
+	path := shortSocketPath(t)
+	holder, err := lockSocketPath(path)
+	if err != nil {
+		t.Fatalf("holding the socket path lock: %v", err)
+	}
+	defer unlockSocketPath(holder)
+
+	start := time.Now()
+	ln, err := Listen("test", path)
+	elapsed := time.Since(start)
+	if err == nil {
+		_ = ln.Close()
+		t.Fatal("Listen succeeded while another holder had the socket path lock")
+	}
+	if !errors.Is(err, ErrInUse) {
+		t.Fatalf("Listen error = %v, want one matching ErrInUse", err)
+	}
+	if elapsed > lockAcquireTimeout+5*time.Second {
+		t.Fatalf("Listen took %s to fail; a held lock must fail within the acquisition bound", elapsed)
+	}
+}
+
+func TestListenSerializesConcurrentStaleReclaim(t *testing.T) {
+	path := shortSocketPath(t)
+	staleSocketFile(t, path)
+
+	type outcome struct {
+		ln  net.Listener
+		err error
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			ln, err := Listen("test", path)
+			results <- outcome{ln: ln, err: err}
+		}()
+	}
+	close(start)
+
+	var winners []net.Listener
+	var losers []error
+	for i := 0; i < 2; i++ {
+		r := <-results
+		if r.err != nil {
+			losers = append(losers, r.err)
+			continue
+		}
+		winners = append(winners, r.ln)
+	}
+	if len(winners) != 1 {
+		for _, ln := range winners {
+			_ = ln.Close()
+		}
+		t.Fatalf("want exactly one winner, got %d (loser errors: %v)", len(winners), losers)
+	}
+	defer winners[0].Close()
+	if !errors.Is(losers[0], ErrInUse) {
+		t.Fatalf("loser error = %v, want one matching ErrInUse", losers[0])
+	}
+	if !IsListening("test", path) {
+		t.Fatal("winner's socket is not connectable")
+	}
+}
+
 func staleSocketFile(t *testing.T, path string) {
 	t.Helper()
 	fd, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)

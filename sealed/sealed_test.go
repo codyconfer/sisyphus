@@ -73,11 +73,34 @@ func TestStoredValueIsEncrypted(t *testing.T) {
 
 func TestNilStore(t *testing.T) {
 	var s *Store
-	if _, ok, err := s.Get(context.Background(), "x"); ok || err != nil {
-		t.Fatalf("nil Get = ok %v err %v", ok, err)
+	if _, ok, err := s.Get(context.Background(), "x"); ok || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("nil Get = ok %v err %v, want ErrUnavailable", ok, err)
 	}
 	if err := s.Put(context.Background(), "x", Entry{AccessToken: "a"}); err == nil {
 		t.Fatal("nil Put should error")
+	}
+}
+
+func TestClosedStoreOperationsError(t *testing.T) {
+	ctx := context.Background()
+	s := openTemp(t)
+	if err := s.Put(ctx, "github", Entry{AccessToken: "a1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, ok, err := s.Get(ctx, "github"); ok || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("closed Get = ok %v err %v, want ErrUnavailable", ok, err)
+	}
+	if err := s.Put(ctx, "github", Entry{AccessToken: "a2"}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("closed Put err = %v, want ErrUnavailable", err)
+	}
+	if err := s.Delete(ctx, "github"); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("closed Delete err = %v, want ErrUnavailable", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close err = %v, want nil", err)
 	}
 }
 

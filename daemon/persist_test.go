@@ -86,6 +86,27 @@ func TestPersistentDeduperSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestPersistentDeduperEmptyBaselineSurvivesRestart(t *testing.T) {
+	store := newMemKV()
+	id := func(s string) string { return s }
+
+	ctx := context.Background()
+	first := NewPersistentDeduper(ctx, id, store, "seen")
+	if out := first.Fresh(ctx, nil); len(out) != 0 {
+		t.Fatalf("first run should baseline (emit nothing), got %v", out)
+	}
+
+	restarted := NewPersistentDeduper(ctx, id, store, "seen")
+	if out := restarted.Fresh(ctx, []string{"a"}); len(out) != 1 || out[0] != "a" {
+		t.Fatalf("after empty-baseline restart, new item should emit, got %v", out)
+	}
+
+	again := NewPersistentDeduper(ctx, id, store, "seen")
+	if out := again.Fresh(ctx, []string{"a", seenInitKey}); len(out) != 1 || out[0] != seenInitKey {
+		t.Fatalf("marker must stay out of the seen set; an item keyed as the marker must emit, got %v", out)
+	}
+}
+
 func TestPollAdaptiveUsesReturnedInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

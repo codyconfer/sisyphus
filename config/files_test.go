@@ -104,6 +104,95 @@ func TestWriteConfigFileCreatesDir(t *testing.T) {
 	}
 }
 
+func TestAppendItemAppends(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "logs")
+	path, err := AppendItem(dir, "app.log", []byte("one\n"))
+	if err != nil {
+		t.Fatalf("AppendItem: %v", err)
+	}
+	if _, err := AppendItem(dir, "app.log", []byte("two\n")); err != nil {
+		t.Fatalf("AppendItem: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "one\ntwo\n" {
+		t.Errorf("content = %q, want %q", got, "one\ntwo\n")
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("mode = %v, want 0600", fi.Mode().Perm())
+	}
+}
+
+func TestAppendItemCreateThenAppend(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "fresh")
+	path, err := AppendItem(dir, "new.log", []byte("first\n"))
+	if err != nil {
+		t.Fatalf("AppendItem creating the file: %v", err)
+	}
+	if _, err := AppendItem(dir, "new.log", []byte("second\n")); err != nil {
+		t.Fatalf("AppendItem after create: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "first\nsecond\n" {
+		t.Errorf("content = %q, want %q", got, "first\nsecond\n")
+	}
+}
+
+func TestOpenAppendAppends(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nested", "app.log")
+	for _, chunk := range []string{"one\n", "two\n"} {
+		f, err := OpenAppend(path)
+		if err != nil {
+			t.Fatalf("OpenAppend: %v", err)
+		}
+		if _, err := f.WriteString(chunk); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "one\ntwo\n" {
+		t.Errorf("content = %q, want %q", got, "one\ntwo\n")
+	}
+}
+
+func TestRemoveItem(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteItem(dir, "gone.txt", []byte("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteItem(dir, "keep.txt", []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveItem(path); err != nil {
+		t.Fatalf("RemoveItem: %v", err)
+	}
+	if Exists(path) {
+		t.Error("file should be removed")
+	}
+	if err := RemoveItem(filepath.Join(dir, "missing.txt")); err != nil {
+		t.Fatalf("RemoveItem missing path: %v", err)
+	}
+	if !IsFile(filepath.Join(dir, "keep.txt")) {
+		t.Error("keep.txt should survive")
+	}
+}
+
 func TestRemoveFilesAndClearDir(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{"config.yaml", "config.json", "keep.txt"} {

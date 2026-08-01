@@ -159,7 +159,7 @@ func (s *Store) encryptionKey(ctx context.Context) ([]byte, error) {
 func (s *Store) Get(ctx context.Context, name string) (Entry, bool, error) {
 	k := s.handle()
 	if k == nil {
-		return Entry{}, false, nil
+		return Entry{}, false, ErrUnavailable
 	}
 	e, ok, err := k.Get(ctx, s.ns, name)
 	if err != nil || !ok {

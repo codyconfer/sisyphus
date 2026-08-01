@@ -330,35 +330,9 @@ func acquire(ctx context.Context, path string, timeout time.Duration) error {
 	}
 	locks.mu.Unlock()
 
-	want, err := openSideFile(path, wantSuffix)
+	f, err := flockSidecar(ctx, path, timeout)
 	if err != nil {
 		return err
-	}
-	defer func() {
-		_ = unlock(want)
-		_ = want.Close()
-	}()
-	queued, err := waitLock(ctx, want, timeout)
-	if err != nil {
-		return err
-	}
-	if !queued {
-		return lockedError{fmt.Errorf("duckdb: timed out queueing for %s (waited %s)",
-			filepath.Base(path), timeout)}
-	}
-
-	f, err := openSideFile(path, lockSuffix)
-	if err != nil {
-		return err
-	}
-	held, err := waitLock(ctx, f, timeout)
-	if err != nil || !held {
-		_ = f.Close()
-		if err != nil {
-			return err
-		}
-		return lockedError{fmt.Errorf("duckdb: %s is locked by another process%s (waited %s)",
-			filepath.Base(path), holderSuffix(f.Name()), timeout)}
 	}
 
 	locks.mu.Lock()
@@ -372,11 +346,71 @@ func acquire(ctx context.Context, path string, timeout time.Duration) error {
 	if locks.m == nil {
 		locks.m = map[string]*lockEntry{}
 	}
+	writePid(f)
+	locks.m[key] = &lockEntry{f: f, refs: 1}
+	return nil
+}
+
+func flockSidecar(ctx context.Context, path string, timeout time.Duration) (*os.File, error) {
+	want, err := openSideFile(path, wantSuffix)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = unlock(want)
+		_ = want.Close()
+	}()
+	queued, err := waitLock(ctx, want, timeout)
+	if err != nil {
+		return nil, err
+	}
+	if !queued {
+		return nil, lockedError{fmt.Errorf("duckdb: timed out queueing for %s (waited %s)",
+			filepath.Base(path), timeout)}
+	}
+
+	f, err := openSideFile(path, lockSuffix)
+	if err != nil {
+		return nil, err
+	}
+	held, err := waitLock(ctx, f, timeout)
+	if err != nil || !held {
+		_ = f.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, lockedError{fmt.Errorf("duckdb: %s is locked by another process%s (waited %s)",
+			filepath.Base(path), holderSuffix(f.Name()), timeout)}
+	}
+	return f, nil
+}
+
+func writePid(f *os.File) {
 	if _, err := f.WriteString(strconv.Itoa(os.Getpid()) + "\n"); err == nil {
 		_ = f.Sync()
 	}
-	locks.m[key] = &lockEntry{f: f, refs: 1}
-	return nil
+}
+
+type Lock struct {
+	f *os.File
+}
+
+func AcquireLock(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	f, err := flockSidecar(ctx, path, timeout)
+	if err != nil {
+		return nil, err
+	}
+	writePid(f)
+	return &Lock{f: f}, nil
+}
+
+func (l *Lock) Release() {
+	if l == nil || l.f == nil {
+		return
+	}
+	_ = unlock(l.f)
+	_ = l.f.Close()
+	l.f = nil
 }
 
 func release(path string) {
