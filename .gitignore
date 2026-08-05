@@ -2,3 +2,4 @@
 /dist/
 *.duckdb
 go.work*
+.directory
